@@ -23,3 +23,9 @@
 - Home people metrics use a six-column desktop grid so To receive and To pay stay on the same row.
 - Budget amount blocks have stronger visual highlighting and clearer amount typography.
 - Saving/Updating busy-banner concept remains fully disabled; normal success/error toasts are retained.
+
+## v13 mobile transaction + calendar heading polish
+- Calendar recurring heading matches the Reminders/Transactions heading scale and uses a distinct blue color.
+- Calendar Reminders remain amber and Transactions remain purple.
+- Transaction rows now use a mobile-safe layout with constrained content, wrapped text, and wrapped action buttons to prevent horizontal page movement on phones.
+- The mobile transaction fix applies to Home, Transactions, Split, and Calendar transaction logs because they share the transaction renderer.

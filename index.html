@@ -101,6 +101,36 @@ body:not(.authenticated) .nav{display:none}
 .calendar-event-section{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
 @media(max-width:600px){.people-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.budget-row{align-items:flex-start}.budget-amounts{grid-template-columns:repeat(3,1fr)}.budget-row>.action-row{flex-direction:column}.recurring-account-row{grid-template-columns:1fr 1fr}}
 </style>
+
+<style id="mobile-transaction-fix">
+/* v13: mobile transaction cards must never push/slide the page horizontally. */
+.transaction-row{min-width:0;align-items:flex-start;}
+.transaction-row>.left{flex:1 1 auto;min-width:0;}
+.transaction-row>.tx-right{flex:0 0 auto;min-width:82px;max-width:42%;}
+.transaction-row .tx-content{min-width:0;max-width:100%;}
+.transaction-row .tx-content .name,.transaction-row .tx-content .sub{overflow-wrap:anywhere;word-break:break-word;}
+.transaction-row .tx-right>b{display:block;white-space:nowrap;}
+.transaction-row .action-row{display:flex;justify-content:flex-end;gap:5px;flex-wrap:wrap;margin-top:5px;}
+.transaction-row .action-row .smallbtn{flex:0 0 auto;}
+@media(max-width:560px){
+  .transaction-row{gap:7px;padding:12px 0;}
+  .transaction-row>.left{flex:1 1 calc(100% - 88px);width:calc(100% - 88px);}
+  .transaction-row>.tx-right{flex:0 0 82px;width:82px;max-width:82px;text-align:right!important;}
+  .transaction-row .bubble{width:36px;height:36px;border-radius:11px;}
+  .transaction-row .name{font-size:14px;}
+  .transaction-row .sub{font-size:10.5px;line-height:1.45;}
+  .transaction-row .tx-right>b{font-size:15px;}
+  .transaction-row .action-row{gap:4px;}
+  .transaction-row .smallbtn{font-size:10px;padding:6px 7px;}
+  .transaction-row .tx-content{overflow:hidden;}
+}
+@media(max-width:380px){
+  .transaction-row>.left{flex-basis:calc(100% - 76px);width:calc(100% - 76px);}
+  .transaction-row>.tx-right{flex-basis:70px;width:70px;}
+  .transaction-row .tx-right>b{font-size:14px;}
+  .transaction-row .smallbtn{font-size:9.5px;padding:5px 6px;}
+}
+</style>
 </head>
 <body>
 <div id="loading" class="loading">Loading My Budget…</div>
@@ -245,6 +275,56 @@ body:not(.authenticated) .nav{display:none}
 .budget-amounts .budget-remaining-over b { color: var(--red) !important; }
 </style>
 
+
+<style id="home-people-stats-layout-fix">
+/* Home dashboard: four core people metrics on row 1, receivable/payable on row 2. */
+.home-people-stats {
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+  margin: 12px 0 !important;
+}
+.home-people-stats > div {
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+}
+.home-people-stats > .receivable,
+.home-people-stats > .payable {
+  grid-column: span 2 !important;
+}
+
+/* Tablet/mobile: two comfortable columns; To receive + To pay stay together on the final row. */
+@media (max-width: 900px) {
+  .home-people-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+  .home-people-stats > .receivable,
+  .home-people-stats > .payable {
+    grid-column: span 1 !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .home-people-stats {
+    gap: 7px !important;
+    margin-top: 10px !important;
+  }
+  .home-people-stats > div {
+    padding: 10px 9px !important;
+    border-radius: 12px !important;
+  }
+  .home-people-stats span {
+    font-size: 10px !important;
+    line-height: 1.2 !important;
+  }
+  .home-people-stats b {
+    font-size: 14px !important;
+    line-height: 1.2 !important;
+    white-space: nowrap !important;
+  }
+}
+</style>
 </html>
 <style>
 /* v21 — consistent colourful person avatars */
@@ -291,10 +371,30 @@ body.dark .person-avatar-me circle:nth-child(2){fill:#f5b88f}
 /* Home people KPIs: keep To receive and To pay on the same row on desktop. */
 .home-people-stats {
   display: grid !important;
-  grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
-  gap: 8px !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 10px !important;
 }
-.home-people-stats > div { min-width: 0 !important; }
+.home-people-stats > div { min-width: 0 !important; box-sizing: border-box !important; }
+.home-people-stats > .receivable,
+.home-people-stats > .payable {
+  grid-column: span 2 !important;
+}
+@media (max-width: 900px) {
+  .home-people-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+  .home-people-stats > .receivable,
+  .home-people-stats > .payable {
+    grid-column: span 1 !important;
+  }
+}
+@media (max-width: 480px) {
+  .home-people-stats { gap: 7px !important; margin-top: 10px !important; }
+  .home-people-stats > div { padding: 10px 9px !important; border-radius: 12px !important; }
+  .home-people-stats span { font-size: 10px !important; line-height: 1.2 !important; }
+  .home-people-stats b { font-size: 14px !important; line-height: 1.2 !important; white-space: nowrap !important; }
+}
 /* Budget amount blocks: make the three figures visibly highlighted and readable. */
 .budget-amounts .budget-amount {
   padding: 9px 10px !important;
