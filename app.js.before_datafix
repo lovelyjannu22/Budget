@@ -4,7 +4,7 @@ const KEY='mybudget_supabase_config_v9';
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const istParts=()=>{const p=new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());return Object.fromEntries(p.filter(x=>x.type!=='literal').map(x=>[x.type,x.value]))};
 const localDate=d=>{if(typeof d==='string'&&/^\d{4}-\d{2}-\d{2}/.test(d))return d.slice(0,10);const x=d instanceof Date?d:new Date(d);return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(x)}; const today=()=>{const p=istParts();return `${p.year}-${p.month}-${p.day}`}; const ym=()=>today().slice(0,7), ymOf=(y,m)=>`${y}-${String(m+1).padStart(2,'0')}`, money=n=>'₹'+Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2}), uid=()=>crypto.randomUUID();
-let sb=null,user=null,filter='All',authMode='signin',budgetPeriod='monthly',calCursor=null,selectedDate=today(),recoveryHandled=false,dataReady=false;
+let sb=null,user=null,filter='All',authMode='signin',budgetPeriod='monthly',calCursor=null,selectedDate=today(),recoveryHandled=false;
 let splitMode='equal',splitRows=[],splitIncludeMe=true,yearChart=null,categoryChart=null,trendChart=null,dailySpendChart=null,monthlyCashflowChart=null,yearCategoryChart=null,topCategoryYearChart=null,insightMode='monthly';
 let state={accounts:[],categories:[],transactions:[],budgets:[],people:[],goals:[],split_transactions:[],split_participants:[],reimbursements:[],goal_contributions:[],recurring_transactions:[],reminders:[],loans:[],loan_repayments:[],transaction_categories:[],money_held:[],transaction_accounts:[],recurring_occurrences:[]};
 const dateObj=d=>new Date(String(d).slice(0,10)+'T12:00:00Z'), todayDate=()=>dateObj(today()), fmtDate=d=>dateObj(d).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'}); if(!calCursor)calCursor=dateObj(today());
@@ -35,7 +35,7 @@ function isRecoveryRedirect(){const h=String(location.hash||'');const q=String(l
 function openRecoveryOnce(){if(recoveryHandled)return;recoveryHandled=true;setTimeout(()=>{if(sb&&user)openResetPassword()},50)}
 function openConfig(){openModalRaw(`<h2>Supabase connection</h2><p class="sub">Use Project URL + Publishable key. Never use a service-role/secret key in a browser app.</p><form id="configForm"><label>Project URL</label><input id="cfgUrl" type="url" required placeholder="https://xxxx.supabase.co" value="${esc(cfg().url||'')}"><label>Publishable key</label><input id="cfgKey" type="password" required placeholder="sb_publishable_..." value="${esc(cfg().key||'')}"><button class="primary">Save & connect</button></form>`);$('configForm').onsubmit=async e=>{e.preventDefault();localStorage.setItem(KEY,JSON.stringify({url:$('cfgUrl').value.trim().replace(/\/$/,''),key:$('cfgKey').value.trim()}));closeModal();await boot()}}
 function openModalRaw(h){$('modalBody').innerHTML=h;$('modal').classList.add('show')} function closeModal(){$('modal').classList.remove('show')}
-function showPage(p){document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));$(p).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.p===p));if(dataReady)render()}
+function showPage(p){document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));$(p).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.p===p));render()}
 const tables=['accounts','categories','transactions','transaction_categories','budgets','people','goals','split_transactions','split_participants','reimbursements','goal_contributions','recurring_transactions','recurring_occurrences','reminders','loans','loan_repayments','money_held'];
 async function loadData(){const results=await Promise.all(tables.map(async t=>{const {data,error}=await sb.from(t).select('*');if(error)throw new Error(t+': '+error.message);return [t,data||[]]}));for(const [t,data] of results)state[t]=data;}
 async function insert(t,row){const {data,error}=await sb.from(t).insert({...row,user_id:user.id}).select().single();if(error)throw error;return data}
@@ -64,32 +64,20 @@ async function boot(){
     // back to the login screen just because a background table query is slow
     // or temporarily fails. This also makes reopening the app feel instant.
     user=data.session.user;
-    dataReady=false;
-    // Keep the authenticated shell visible immediately, but do not render empty
-    // financial totals/lists from the initial in-memory state. This prevents the
-    // brief 'all data disappeared, then came back' effect after a refresh.
     setAuthGate(true);
-    showLoading(true,'Loading your budget…');
+    showLoading(false);
+    render();
     if(recoveryRedirect)openRecoveryOnce();
 
-    // Load the user's cloud data before the first data-dependent render. The
-    // authentication step is already complete, so reopening remains fast while
-    // the UI never shows misleading zero/empty balances.
+    // Load the user's data after the authenticated UI is already visible.
     try{
       await ensureBase();
       await loadData();
       const generated=await processRecurring(false);
       if(generated)await loadData();
-      dataReady=true;
-      showLoading(false);
       render();
     }catch(dataError){
-      console.error('Initial data load failed:',dataError);
-      // Keep the user authenticated and the existing data state intact. Do not
-      // render empty arrays as if they were the user's real data.
-      showLoading(false);
-      dataReady=true;
-      render();
+      console.error('Background data load failed:',dataError);
       if(typeof mbToast==='function')mbToast('Connected, but some data could not be refreshed. Please try again.','error');
     }
   }catch(e){
@@ -113,20 +101,17 @@ $('authForm').onsubmit=async e=>{
       if(r.error)throw r.error;
       if(r.data.session){
         user=r.data.user;
-        dataReady=false;
-        setAuthGate(true);showLoading(true,'Loading your budget…');
-        try{await ensureBase();await loadData();dataReady=true;showLoading(false);render()}catch(err){console.error('Initial data load failed:',err);dataReady=true;showLoading(false);render();if(typeof mbToast==='function')mbToast('Signed in, but some data could not be loaded yet.','error')}
+        setAuthGate(true);showLoading(false);render();
+        try{await ensureBase();await loadData();render()}catch(err){console.error('Initial data load failed:',err);if(typeof mbToast==='function')mbToast('Signed in, but some data could not be loaded yet.','error')}
       }else notice('Account created. Check your email if confirmation is enabled, then sign in.','success')
     }else{
       const r=await sb.auth.signInWithPassword({email,password});
       if(r.error)throw r.error;
       user=r.data.user;
-      dataReady=false;
-      // Authentication succeeds immediately, but don't render the empty in-memory
-      // state before Supabase data arrives. The authenticated shell can be shown
-      // while the real cloud data loads, avoiding misleading zero/empty values.
-      setAuthGate(true);showLoading(true,'Loading your budget…');
-      try{await ensureBase();await loadData();const generated=await processRecurring(false);if(generated)await loadData();dataReady=true;showLoading(false);render()}catch(err){console.error('Initial data load failed:',err);dataReady=true;showLoading(false);render();if(typeof mbToast==='function')mbToast('Signed in, but some data could not be refreshed yet.','error')}
+      // Authentication succeeds here; show the app immediately. Database
+      // loading continues in the background instead of blocking login.
+      setAuthGate(true);showLoading(false);render();
+      try{await ensureBase();await loadData();const generated=await processRecurring(false);if(generated)await loadData();render()}catch(err){console.error('Initial data load failed:',err);if(typeof mbToast==='function')mbToast('Signed in, but some data could not be refreshed yet.','error')}
     }
   }catch(e){notice(e?.message||'Authentication failed.','error')}
   finally{$('authSubmit').disabled=false}
