@@ -60,37 +60,42 @@ async function boot(){
     clearTimeout(bootTimeout);
     if(!data.session){showLoading(false);setAuthGate(false);return}
 
-    // A valid Supabase session means the user is logged in. Do not send them
-    // back to the login screen just because a background table query is slow
-    // or temporarily fails. This also makes reopening the app feel instant.
+    // A valid Supabase session means the user is logged in. Keep the authenticated
+    // shell visible, but NEVER render the initial empty in-memory state. The old
+    // behavior briefly showed zero balances on refresh while the cloud queries
+    // were still running, which looked like the user's data had disappeared.
     user=data.session.user;
     dataReady=false;
-    // Keep the authenticated shell visible immediately, but do not render empty
-    // financial totals/lists from the initial in-memory state. This prevents the
-    // brief 'all data disappeared, then came back' effect after a refresh.
     setAuthGate(true);
     showLoading(true,'Loading your budget…');
     if(recoveryRedirect)openRecoveryOnce();
 
-    // Load the user's cloud data before the first data-dependent render. The
-    // authentication step is already complete, so reopening remains fast while
-    // the UI never shows misleading zero/empty balances.
     try{
-      await ensureBase();
+      // One parallel read gets the real cloud state first. Base categories are
+      // created only when the cloud is genuinely empty, avoiding an unnecessary
+      // extra query on every refresh.
       await loadData();
-      const generated=await processRecurring(false);
-      if(generated)await loadData();
+      if(!state.categories.length){
+        await ensureBase();
+        await loadData();
+      }
       dataReady=true;
       showLoading(false);
       render();
+
+      // Recurring generation is maintenance work; do it after the real data is
+      // already on screen so reopening is not blocked by it. If it creates due
+      // occurrences, refresh the in-memory state afterwards.
+      try{
+        const generated=await processRecurring(false);
+        if(generated){await loadData();render();}
+      }catch(recErr){console.warn('Recurring maintenance deferred:',recErr)}
     }catch(dataError){
       console.error('Initial data load failed:',dataError);
-      // Keep the user authenticated and the existing data state intact. Do not
-      // render empty arrays as if they were the user's real data.
-      showLoading(false);
-      dataReady=true;
-      render();
-      if(typeof mbToast==='function')mbToast('Connected, but some data could not be refreshed. Please try again.','error');
+      // IMPORTANT: do not mark data ready and do not render empty arrays. Keep the
+      // loading screen up so zero balances can never masquerade as real data.
+      showLoading(true,'Could not load your budget data. Retrying…');
+      setTimeout(()=>{if(user&&sb&&!dataReady)boot()},1200);
     }
   }catch(e){
     console.error(e);
@@ -115,7 +120,7 @@ $('authForm').onsubmit=async e=>{
         user=r.data.user;
         dataReady=false;
         setAuthGate(true);showLoading(true,'Loading your budget…');
-        try{await ensureBase();await loadData();dataReady=true;showLoading(false);render()}catch(err){console.error('Initial data load failed:',err);dataReady=true;showLoading(false);render();if(typeof mbToast==='function')mbToast('Signed in, but some data could not be loaded yet.','error')}
+        try{await loadData();if(!state.categories.length){await ensureBase();await loadData()}dataReady=true;showLoading(false);render();try{const generated=await processRecurring(false);if(generated){await loadData();render()}}catch(recErr){console.warn('Recurring maintenance deferred:',recErr)}}catch(err){console.error('Initial data load failed:',err);showLoading(true,'Could not load your budget data. Retrying…');setTimeout(()=>{if(user&&sb&&!dataReady)boot()},1200)}
       }else notice('Account created. Check your email if confirmation is enabled, then sign in.','success')
     }else{
       const r=await sb.auth.signInWithPassword({email,password});
@@ -126,7 +131,7 @@ $('authForm').onsubmit=async e=>{
       // state before Supabase data arrives. The authenticated shell can be shown
       // while the real cloud data loads, avoiding misleading zero/empty values.
       setAuthGate(true);showLoading(true,'Loading your budget…');
-      try{await ensureBase();await loadData();const generated=await processRecurring(false);if(generated)await loadData();dataReady=true;showLoading(false);render()}catch(err){console.error('Initial data load failed:',err);dataReady=true;showLoading(false);render();if(typeof mbToast==='function')mbToast('Signed in, but some data could not be refreshed yet.','error')}
+      try{await loadData();if(!state.categories.length){await ensureBase();await loadData()}dataReady=true;showLoading(false);render();try{const generated=await processRecurring(false);if(generated){await loadData();render()}}catch(recErr){console.warn('Recurring maintenance deferred:',recErr)}}catch(err){console.error('Initial data load failed:',err);showLoading(true,'Could not load your budget data. Retrying…');setTimeout(()=>{if(user&&sb&&!dataReady)boot()},1200)}
     }
   }catch(e){notice(e?.message||'Authentication failed.','error')}
   finally{$('authSubmit').disabled=false}
