@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#7666cf"><meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.json"><title>My Budget</title>
+<script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script defer src="app.js"></script>
+<style>
+:root{--bg:#f7f5fb;--card:#fff;--ink:#1b1822;--muted:#77717e;--line:#e7e1ed;--purple:#7666cf;--purple2:#9a8ee0;--lav:#eeeafd;--blue:#6f98d8;--mint:#59a77e;--mintbg:#e6f4ec;--amber:#d89c45;--amberbg:#fbf0df;--rose:#c9708b;--rosebg:#f9e8ee;--red:#c95d5b;--redbg:#fbeaea;--shadow:0 8px 28px rgba(42,30,60,.07)}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif}body{min-height:100dvh;overflow-x:hidden}button,input,select,textarea{font:inherit}button{cursor:pointer}.hidden{display:none!important}.loading{min-height:100dvh;display:grid;place-items:center;padding:24px;text-align:center;font-size:18px;color:var(--muted)}.auth{min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:24px 16px calc(24px + env(safe-area-inset-bottom))}.authbox{width:min(640px,100%);background:var(--card);border:1px solid var(--line);border-radius:28px;padding:28px;box-shadow:var(--shadow)}.authbox h1{font-size:46px;line-height:1.05;margin:16px 0 12px;letter-spacing:-1.4px}.authbox p{font-size:17px;line-height:1.55;color:var(--muted);margin:0 0 18px}.branddot{display:inline-block;width:19px;height:19px;border-radius:50%;background:var(--purple);vertical-align:-3px;margin-right:8px}.authbox .primary{margin-top:18px}.authbox .secondary{margin-top:10px}.auth-forgot{display:block;margin:12px auto 2px;background:none;border:0;padding:4px 8px;color:var(--purple);font-weight:700}.auth-forgot:hover{text-decoration:underline}
+.app{width:min(760px,100%);margin:auto;min-height:100dvh;padding:16px 15px 108px}.top{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.greeting{font-size:17px;font-weight:750;margin:4px 2px 12px;color:var(--ink)}.title{font-size:28px;font-weight:850;letter-spacing:-.7px}.month{font-size:13px;color:var(--muted);margin-top:3px}.icon{width:44px;height:44px;border:1px solid var(--line);background:var(--card);border-radius:14px;box-shadow:var(--shadow)}
+.page{display:none}.page.active{display:block}.hero{border-radius:27px;padding:22px;background:linear-gradient(135deg,#211e28,#514666);color:#fff;box-shadow:var(--shadow);margin-bottom:12px}.label{font-size:10px;letter-spacing:1px;color:var(--muted)}.hero .label{color:#d0cad6}.balance{font-size:39px;font-weight:850;margin:6px 0 17px}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.stat{background:rgba(255,255,255,.11);border:1px solid rgba(255,255,255,.08);border-radius:15px;padding:11px}.stat b{display:block;font-size:17px;margin-top:4px}.quick{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:18px}.quick button{border:1px solid var(--line);background:var(--card);border-radius:17px;padding:11px 3px;color:#5f58a5;box-shadow:var(--shadow);font-size:11px}.quick span{display:block;font-size:21px;line-height:25px;margin-bottom:4px}
+.section{display:flex;align-items:center;justify-content:space-between;margin:18px 2px 9px}.section h2{font-size:18px;margin:0}.section-heading{display:flex;align-items:baseline;gap:8px}.page-date{font-size:10px;color:var(--muted);font-weight:600}.link{font-size:12px;color:var(--muted);cursor:pointer}.card{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:14px 16px;margin-bottom:12px;box-shadow:var(--shadow)}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}.left{display:flex;gap:10px;align-items:center;min-width:0}.bubble{width:41px;height:41px;border-radius:14px;background:#f1eef6;display:grid;place-items:center;flex:none}.bubble.expense{background:var(--redbg)}.bubble.income{background:var(--mintbg)}.bubble.transfer{background:#e9f0fb}.bubble.split{background:var(--lav)}.bubble.goal{background:var(--amberbg)}.bubble.reminder{background:#f1eef6}.name{font-size:14px;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sub{font-size:11px;color:var(--muted);margin-top:3px;line-height:1.4}.green{color:var(--mint)}.red{color:var(--red)}.purple{color:var(--purple)}.amber{color:var(--amber)}.split{color:var(--amber)}
+.progress{height:8px;background:#ece9ef;border-radius:99px;overflow:hidden;margin:8px 0 5px}.bar{height:100%;border-radius:99px;background:var(--green,#59a77e)}.bar.low{background:var(--mint)}.bar.mid{background:var(--amber)}.bar.full{background:var(--purple)}.bar.over{background:var(--red)}.status-low{background:var(--mintbg);color:#397b58}.status-mid{background:var(--amberbg);color:#9a681e}.status-full{background:var(--lav);color:#5d51a7}.status-over{background:var(--redbg);color:#a84543}.badge{display:inline-block;font-size:10px;padding:4px 7px;border-radius:99px;font-weight:800}.toolbar{display:flex;gap:7px;overflow:auto;margin-bottom:10px}.chip{white-space:nowrap;border:1px solid var(--line);background:var(--card);border-radius:99px;padding:8px 12px;font-size:11px}.chip.active{background:#211e28;color:#fff}.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:11px}.tabs button{padding:10px;border:1px solid var(--line);background:var(--card);border-radius:12px;font-size:12px}.tabs button.active{background:var(--lav);border-color:#d4cdf2;color:#5c4faa;font-weight:800}
+.nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:min(760px,100%);background:rgba(255,255,255,.96);backdrop-filter:blur(16px);border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(5,1fr);padding:7px 5px calc(7px + env(safe-area-inset-bottom));z-index:20}.nav button{border:0;background:none;color:#7d7884;font-size:10px}.nav button.active{color:#211d2b;font-weight:800}.nav span{display:block;font-size:20px;margin-bottom:2px}
+.modal{position:fixed;inset:0;background:rgba(20,16,25,.55);display:none;align-items:flex-end;z-index:40}.modal.show{display:flex}.sheet{width:min(700px,100%);max-height:94dvh;overflow:auto;background:var(--card);border-radius:27px 27px 0 0;padding:18px 17px calc(25px + env(safe-area-inset-bottom))}.close{float:right;border:0;background:#f0edf4;border-radius:50%;width:35px;height:35px;font-size:21px}.sheet h2{font-size:22px;margin:4px 0 7px}.sheet h3{font-size:15px;margin:18px 0 7px}form label{display:block;font-size:11px;color:var(--muted);margin:13px 0 6px}input,select,textarea{width:100%;padding:12px 13px;border:1px solid var(--line);border-radius:13px;background:var(--card);outline:none;color:var(--ink)}textarea{min-height:75px;resize:vertical}input:focus,select:focus,textarea:focus{border-color:var(--purple);box-shadow:0 0 0 3px rgba(118,102,207,.11)}.primary{width:100%;border:0;background:var(--purple);color:#fff;border-radius:14px;padding:13px;margin-top:18px;font-weight:800}.secondary{width:100%;border:1px solid var(--line);background:var(--card);border-radius:14px;padding:12px;margin-top:9px;font-weight:700}.danger{color:var(--red);border-color:#efd2d0}.two{display:grid;grid-template-columns:1fr 1fr;gap:9px}.three{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.notice{padding:11px 12px;border-radius:13px;background:#f3effb;color:#6255ad;font-size:12px;margin:10px 0;line-height:1.45}.notice.error{background:var(--redbg);color:#a84543}.notice.success{background:var(--mintbg);color:#397b58}.empty{text-align:center;color:var(--muted);font-size:13px;padding:24px 5px}.smallbtn{border:1px solid var(--line);background:var(--card);border-radius:9px;padding:6px 8px;font-size:11px}.kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.kpi .card{margin:0}.kpi strong{font-size:19px;display:block;margin-top:4px}.chartbox{height:280px}.insight{padding:14px;border-radius:16px;background:#faf8fc;border:1px solid var(--line);margin:0;font-size:12px;line-height:1.5}.insight-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.insight-card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px;box-shadow:var(--shadow)}.insight-card h3{margin:0 0 7px;font-size:14px}.insight-card p{margin:0;color:var(--muted);line-height:1.5}.period-select{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}.period-select select{min-height:42px}.person-grid{display:grid;grid-template-columns:1fr 110px 36px;gap:7px;align-items:center;margin-top:8px}.mode{display:grid;grid-template-columns:1fr 1fr;gap:7px}.mode button{padding:10px;border:1px solid var(--line);background:var(--card);border-radius:11px}.mode button.selected{background:var(--lav);border-color:#d3cdf1;color:#5c4faa;font-weight:800}.tree{padding-left:14px;border-left:2px solid #ece7f3}.calendar-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}.calendar-title{font-weight:800}.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}.cal-day-name{text-align:center;font-size:10px;color:var(--muted);padding:5px 0}.cal-cell{min-height:57px;border:1px solid var(--line);border-radius:10px;padding:5px;background:var(--card);cursor:pointer}.cal-cell.muted{opacity:.4}.cal-cell.selected{outline:2px solid var(--purple)}.cal-num{font-size:10px;font-weight:800}.cal-spend{font-size:9px;margin-top:8px}.heat0{background:#fff}.heat1{background:#edf8f1}.heat2{background:#fbf2df}.heat3{background:#f6dfe7}.heat4{background:#f5cccc}.split-summary{background:var(--lav);padding:10px;border-radius:12px;margin-top:8px;font-size:12px}.split-person-label{min-width:0}.loan-kpis{display:grid;grid-template-columns:1fr 1fr;gap:9px}.loan-kpis>div{padding:14px;border-radius:16px;background:var(--card);border:1px solid var(--line)}.loan-kpis span{display:block;font-size:10px;letter-spacing:1px;color:var(--muted)}.loan-kpis b{display:block;font-size:20px;margin-top:5px}.bubble.loan{background:var(--lav)}.theme-row{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.theme-row button{padding:10px;border:1px solid var(--line);border-radius:11px;background:var(--card)}.goal-plan{margin-top:7px;padding:8px 10px;border-radius:11px;background:var(--lav);font-size:11px;color:#5c4faa;display:flex;align-items:center;gap:5px;flex-wrap:wrap}.goal-month-input{width:62px!important;padding:7px 8px!important;border-radius:9px!important;font-size:12px!important;font-weight:800}.goal-save-months{padding:6px 8px!important;margin:0!important}.insight-period-banner{flex-direction:column;align-items:flex-start}.month-total{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}.month-total>div{padding:9px;border-radius:12px;background:#faf8fc}.month-total b{display:block;margin-top:3px;font-size:13px}
+body.dark{--bg:#0f1115;--card:#181b21;--ink:#f5f7fb;--muted:#aeb6c3;--line:#303640;--lav:#292443;--mintbg:#173326;--amberbg:#382b17;--rosebg:#3a202d;--redbg:#3a2020;--purple:#9a8df0;--mint:#63c995;--amber:#e8b45b;--red:#ef7773;--blue:#78a9ee}body.dark .nav{background:rgba(15,17,21,.97);color:var(--ink)}body.dark .chip.active{background:#9a8df0;color:#11131a}body.dark .insight{background:#28232e}body.dark .card,body.dark .insight-card,body.dark .sheet,body.dark .authbox{background:#211e27;color:#f7f4fa;border-color:#3b3544}body.dark button,body.dark .secondary,body.dark .smallbtn,body.dark .icon,body.dark .tabs button,body.dark .quick button,body.dark .chip{color:var(--ink);background:var(--card);border-color:#3b424d}body.dark .primary{background:#8f82e8;color:#fff;border-color:#8f82e8}body.dark input,body.dark select,body.dark textarea{background:#1b1820;color:#f7f4fa;border-color:#454052}body.dark input::placeholder,body.dark textarea::placeholder{color:#8f8997}body.dark .cal-cell.heat0{background:#211e27}body.dark .cal-cell.heat1{background:#193126}body.dark .cal-cell.heat2{background:#3a301f}body.dark .cal-cell.heat3{background:#3b2730}body.dark .cal-cell.heat4{background:#432628}body.dark .month-total>div{background:#2a2530}body.dark .bubble{background:#302b35}body.dark .nav{border-top-color:#303640}body.dark .nav button{color:#9da6b3}body.dark .nav button.active{color:#ffffff}body.dark .close{background:#272c34;color:#ffffff;border:1px solid #3b424d}body.dark .link{color:#aeb6c3}body.dark .notice{background:#292443;color:#c8c0ff}body.dark .notice.error{background:#3a2020;color:#ffaaa7}body.dark .notice.success{background:#173326;color:#9ae0ba}body.dark .goal-plan{background:#292443;color:#d0c9ff}body.dark .benchmark{background:#20252c;border-color:#353c47}body.dark .insight-period-banner{background:#1c2229;border-color:#353c47}body.dark .sub{color:#aaa3b1}body.dark .label{color:#b8b1bd}.checkrow{display:flex;align-items:center;gap:8px}.checkrow input{width:auto}.recurring-options{padding:10px;border:1px dashed var(--line);border-radius:12px;margin:8px 0}
+@media(max-width:700px){.app{width:100%;padding-left:12px;padding-right:12px}.auth{padding-left:12px;padding-right:12px}.authbox{padding:22px 18px;border-radius:22px}.authbox h1{font-size:38px}.authbox p{font-size:15px}.sheet{width:100%;padding-left:15px;padding-right:15px}.row{gap:8px}.smallbtn{padding:6px 7px}}@media(max-width:480px){.loan-kpis{grid-template-columns:1fr}.split-person-label select{padding:10px 8px;font-size:12px}.stats{grid-template-columns:1fr 1fr}.stats .stat:last-child{grid-column:1/-1}.kpi{grid-template-columns:1fr 1fr}.kpi .card:last-child{grid-column:1/-1}.person-grid{grid-template-columns:1fr 92px 34px}.cal-cell{min-height:51px}.quick{grid-template-columns:repeat(2,1fr)}.top .title{font-size:24px}.balance{font-size:34px}.hero{padding:18px;border-radius:22px}.card{padding:12px 13px}.section{margin-top:15px}.authbox h1{font-size:34px}.authbox p{font-size:14px}.auth{align-items:flex-start;padding-top:18px}.nav{padding-left:2px;padding-right:2px}.nav button{font-size:9px}.nav span{font-size:19px}}
+@media(min-width:701px){.authbox{width:min(520px,calc(100vw - 48px));padding:30px}.authbox h1{font-size:44px}.authbox input{font-size:16px}}
+@media(max-width:480px){.loan-kpis{grid-template-columns:1fr}.split-person-label select{padding:10px 8px;font-size:12px}.authbox{width:100%;max-width:430px}.authbox input{font-size:16px;min-height:48px}.authbox .primary,.authbox .secondary{min-height:48px}}
+button{color:var(--ink)}body.dark .theme-row button,body.dark .secondary,body.dark .smallbtn,body.dark .icon,body.dark .tabs button,body.dark .chip{color:var(--ink)}body.dark input,body.dark select,body.dark textarea{color:var(--ink);background:var(--card)}body.dark .primary{color:#fff}.insight-section-title{font-size:16px;font-weight:850;margin:18px 2px 9px}.insight-feature-grid{grid-template-columns:1.15fr .85fr}.chart-card{min-width:0}.doughnut-box{height:245px}.mini-stat{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}.mini-stat:last-child{border-bottom:0}.mini-stat small{display:block;color:var(--muted);font-size:10px;margin-top:3px}.mini-stat strong{font-size:14px}.alert-row{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:12px}.alert-row:last-child{border-bottom:0}.settings-note{display:block;margin:8px 2px 14px}.insight-period-banner{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:11px 13px;border:1px solid var(--line);border-radius:15px;background:#faf8fc;color:var(--ink);font-size:11px}.insight-period-banner span{color:var(--muted)}.benchmark{display:flex;justify-content:space-between;gap:8px;margin-top:12px;padding:9px 10px;border:1px solid var(--line);border-radius:11px;background:#faf8fc;font-size:10px}.card-title-row{display:flex;justify-content:space-between;align-items:center;gap:8px}.category-drill{margin-top:10px}.small-doughnut{height:190px}.goal-insight{min-width:0}@media(max-width:560px){.app{max-width:520px;width:100%;padding:12px 12px 102px;overflow-x:hidden}.title{font-size:25px}.hero{padding:18px}.insight-grid,.insight-feature-grid{grid-template-columns:1fr}.kpi{grid-template-columns:1fr 1fr}.kpi .card:last-child{grid-column:1/-1}.three{grid-template-columns:repeat(3,1fr)}.cal{gap:4px}.cal-cell{min-height:58px;padding:5px 4px}.cal-spend{font-size:8px;white-space:nowrap}.theme-row{grid-template-columns:1fr}.period-select{grid-template-columns:1fr}}
+
+body:not(.authenticated) .nav{display:none !important;}
+body.authenticated #auth{display:none !important;}
+</style>
+
+<style>
+/* Final visual polish */
+.top{gap:14px}.top>div:first-child{min-width:0}.top .greeting{margin:0 0 3px;font-size:14px;line-height:1.25}.top .title{line-height:1.05}.page-date{white-space:nowrap}
+.insight-section-title{margin:24px 2px 10px;letter-spacing:.1px}.insight-grid{gap:14px}.insight-card{border-radius:22px;padding:17px;box-shadow:0 10px 30px rgba(42,30,60,.06)}.insight-card h3{font-size:15px;line-height:1.3;margin-bottom:9px}.insight-card strong{line-height:1.2}.insight-period-banner{margin-bottom:4px;padding:14px 16px;border-radius:18px}.kpi{gap:12px}.kpi .card{border-radius:20px;padding:16px}.chartbox{height:300px}.doughnut-box{height:270px}.small-doughnut{height:210px}.category-drill{margin-top:14px}.benchmark{margin-top:14px}.mini-stat{padding:13px 0}.alert-row{padding:11px 0}.goal-insight{display:flex;flex-direction:column;justify-content:center}
+@media(max-width:560px){
+  .top{align-items:flex-start}.top .greeting{font-size:13px}.top .title{font-size:25px}.top .month{font-size:12px}.icon{width:42px;height:42px}
+  .insight-grid,.insight-feature-grid{grid-template-columns:1fr;gap:12px}.insight-section-title{margin-top:21px}.insight-card{padding:15px;border-radius:19px}.chartbox{height:250px}.doughnut-box{height:255px}.small-doughnut{height:200px}
+  .period-select{gap:9px}.period-select select{font-size:14px}.tabs{gap:8px}.tabs button{min-height:44px}
+  .kpi{gap:9px}.kpi .card{padding:14px}.kpi strong{font-size:18px}
+  .calendar-head{padding:2px}.cal-cell{min-height:58px}.cal-spend{font-size:8px}
+}
+body.dark{--bg:#0b0d11;--card:#171a20;--ink:#f4f7fb;--muted:#aeb7c6;--line:#303742;--purple:#a79bff;--lav:#282342;--mint:#62d19a;--mintbg:#153426;--amber:#f0bc63;--amberbg:#3a2d18;--red:#ff7d78;--redbg:#3b2020;--rose:#e98aa7;--rosebg:#3a202c;--blue:#80b3ff;--shadow:0 10px 28px rgba(0,0,0,.24)}
+body.dark .app{color:var(--ink)}body.dark .card,body.dark .insight-card,body.dark .sheet,body.dark .authbox{background:var(--card);border-color:var(--line);box-shadow:var(--shadow)}
+body.dark .secondary,body.dark .smallbtn,body.dark .icon,body.dark .tabs button,body.dark .quick button,body.dark .chip,body.dark .theme-row button{background:#1c2027;color:var(--ink);border-color:#39414d}
+body.dark .tabs button.active,body.dark .mode button.selected{background:#332d5d;color:#cfc8ff;border-color:#5b51a2}
+body.dark .primary{background:#8f83ef;color:#fff}
+body.dark input,body.dark select,body.dark textarea{background:#111419;color:#f4f7fb;border-color:#424a57;color-scheme:dark}
+body.dark input:focus,body.dark select:focus,body.dark textarea:focus{border-color:var(--purple);box-shadow:0 0 0 3px rgba(167,155,255,.18)}
+body.dark .insight-period-banner,body.dark .benchmark,body.dark .month-total>div{background:#1c2027;border-color:#343c48;color:var(--ink)}
+body.dark .goal-plan{background:#282342;color:#d4ceff}.goal-plan{color:var(--purple)}
+body.dark .notice{background:#282342;color:#d4ceff}.notice.error{color:var(--red)}
+body.dark .heat0{background:#171a20}.cal-cell{transition:transform .12s ease,box-shadow .12s ease}.cal-cell:active{transform:scale(.98)}
+body.dark .cal-cell.heat1{background:#173326}body.dark .cal-cell.heat2{background:#3a2e1b}body.dark .cal-cell.heat3{background:#3b2831}body.dark .cal-cell.heat4{background:#472526}
+body.dark .nav{background:rgba(11,13,17,.96);border-top-color:#303742}body.dark .nav button{color:#aeb7c6}body.dark .nav button.active{color:#fff}
+body.dark .bubble{background:#242932}.bubble.split{background:#e9e4ff}
+body.dark .bubble.split{background:#302b52}.bubble.goal{background:#3a2d18}
+</style>
+
+<style>
+/* Final UI/date/split polish */
+.brandline{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);letter-spacing:.2px;margin:0 0 7px}.brandline .branddot{width:16px;height:16px;margin:0}.top{margin-bottom:16px}.top .greeting{margin:0 0 2px;font-size:14px;font-weight:800;color:var(--ink)}.top .title{font-size:31px;letter-spacing:-1px}.top .month{font-size:14px;margin-top:5px}.settings-icon{border-radius:16px}.person-grid{align-items:center}.split-person-label{font-size:15px;font-weight:650}.goal-plan{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 11px;background:var(--lav);border-radius:12px;margin-top:8px;color:var(--purple);font-size:11px}.goal-month-input{width:82px!important;padding:8px 9px!important;background:var(--card)!important}.goal-save-months{width:auto!important;margin:0!important}.cal-cell.selected{box-shadow:inset 0 0 0 2px var(--purple),0 4px 12px rgba(118,102,207,.12)}
+body.dark{--bg:#0a0c10;--card:#151922;--ink:#f7f8fb;--muted:#aeb7c8;--line:#303846;--purple:#b0a5ff;--purple2:#9186ef;--lav:#292448;--blue:#82b7ff;--mint:#62d39b;--mintbg:#143326;--amber:#f3bf67;--amberbg:#382b18;--rose:#ef8eab;--rosebg:#38202a;--red:#ff817d;--redbg:#3a2021;--shadow:0 12px 30px rgba(0,0,0,.32)}
+body.dark .brandline,body.dark .greeting,body.dark .title,body.dark .month,body.dark .section h2,body.dark .name,body.dark .sheet h2,body.dark .sheet h3{color:var(--ink)}body.dark .sub,body.dark .label,body.dark .page-date,body.dark .link{color:var(--muted)}body.dark .card,body.dark .insight-card,body.dark .sheet,body.dark .authbox{background:var(--card);border-color:var(--line);color:var(--ink)}body.dark input,body.dark select,body.dark textarea{background:#0f1319!important;color:#f7f8fb!important;border-color:#3b4554!important;color-scheme:dark}body.dark input::placeholder,body.dark textarea::placeholder{color:#7f8999}body.dark .secondary,body.dark .smallbtn,body.dark .icon,body.dark .tabs button,body.dark .quick button,body.dark .chip,body.dark .theme-row button{background:#1d222b;color:#f7f8fb;border-color:#3a4452}body.dark .tabs button.active,body.dark .mode button.selected{background:#393064;color:#ddd8ff;border-color:#6c61bd}body.dark .primary{background:#9a8df4;color:#fff}body.dark .notice{background:#282343;color:#ddd7ff}body.dark .notice.error{background:#3a2021;color:#ff9a96}body.dark .notice.success{background:#143326;color:#8de2b6}body.dark .hero{background:linear-gradient(135deg,#191621,#3f3654)}body.dark .stat{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.1)}body.dark .cal-cell{background:#151922;border-color:#303846}body.dark .cal-cell.heat1{background:#143326}body.dark .cal-cell.heat2{background:#382b18}body.dark .cal-cell.heat3{background:#38202a}body.dark .cal-cell.heat4{background:#452224}body.dark .insight-period-banner,body.dark .benchmark,body.dark .month-total>div{background:#1d222b;border-color:#343e4d;color:var(--ink)}body.dark .goal-plan{background:#292448;color:#ddd7ff}body.dark .bubble{background:#242a33}.bubble.person{background:var(--lav)}body.dark .bubble.split{background:#302a52}body.dark .bubble.loan{background:#24362f}
+@media(max-width:560px){.app{padding:12px 12px 102px}.brandline{font-size:11px;margin-bottom:5px}.top .greeting{font-size:13px}.top .title{font-size:27px}.top .month{font-size:12px}.settings-icon{width:44px;height:44px}.three{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}.selectedDay .three{font-size:11px}.goal-plan{font-size:10px}.goal-month-input{width:76px!important}}
+</style>
+<style>
+/* v20 final visual polish */
+.title-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:6px}.title-meta .month{margin-top:0}.title-meta .greeting{margin:0;font-size:13px;line-height:1.25;font-weight:800;color:var(--muted)}
+.insight-grid,.insight-feature-grid{gap:18px}.insight-section-title{margin-top:28px;margin-bottom:12px}.insight-period-banner{margin-bottom:8px}.insight-card{min-width:0}.chart-card{overflow:hidden}.chartbox{margin-top:4px}.category-drill{margin-top:18px}.kpi{gap:14px}.kpi .card{margin:0}.split-summary{margin-top:12px;padding:13px 14px}.person-grid{margin-top:10px;gap:9px}.goal-plan{gap:9px}.goal-month-input{min-height:38px}
+body.dark .title-meta .greeting{color:var(--muted)}body.dark .insight-card{box-shadow:0 12px 32px rgba(0,0,0,.28)}body.dark .split-summary{background:#2a244a;color:#f1efff}body.dark .goal-plan{background:#292448;color:#e4dfff}body.dark .mode button{background:#1d222b;color:var(--ink)}body.dark .mode button.selected{background:#3b326b;color:#fff;border-color:#7568d0}
+@media(max-width:560px){.title-meta{gap:7px 10px}.title-meta .greeting{font-size:12px}.insight-grid,.insight-feature-grid{gap:14px}.insight-section-title{margin-top:24px}.insight-card{padding:16px}.kpi{gap:10px}}
+</style>
+<style>
+/* vNext cohesive UI */
+button{transition:transform .12s ease,box-shadow .18s ease,background .18s ease,border-color .18s ease;min-height:44px}button:active{transform:scale(.98)}.primary{box-shadow:0 8px 20px rgba(118,102,207,.22)}.secondary,.smallbtn,.chip,.mode button{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:10px 13px;font-weight:750}.smallbtn{min-height:36px;padding:7px 10px;font-size:12px}.dangerbtn{color:var(--red)!important}.mode{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:7px}.mode button{min-height:42px}.mode button.selected{background:var(--lav);color:var(--purple);border-color:var(--purple)}.chip{min-height:38px;padding:8px 12px}.chip.active{background:var(--purple);color:#fff;border-color:var(--purple)}.category-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.allocation-row{align-items:end;margin-bottom:10px}.field-block{margin-top:10px}.recurring-dot{display:inline-grid;place-items:center;width:18px;height:18px;font-size:22px;line-height:12px;color:var(--purple);position:absolute;right:5px;top:1px}.cal-cell{position:relative}.selected-recurring{margin-top:14px;padding-top:10px;border-top:1px solid var(--line)}.bubble.held{background:var(--amberbg)}.goal-actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;align-items:center}
+body.dark{--bg:#0b0e13;--card:#171b22;--ink:#f4f7fb;--muted:#aab4c2;--line:#303846;--lav:#2a2548;--mintbg:#17372a;--amberbg:#3a2c16;--redbg:#3b2020;--purple:#a99bf7;--red:#ff7773}body.dark .primary{background:#9b8df2;box-shadow:0 8px 22px rgba(0,0,0,.32)}body.dark .secondary,body.dark .smallbtn,body.dark .chip,body.dark .mode button{background:#202630;border-color:#394352;color:#f4f7fb}body.dark .chip.active,body.dark .mode button.selected{background:#41356f;border-color:#8174df;color:#fff}body.dark .quick button{background:#1d232c;border-color:#394352;color:#dcd7ff}body.dark .close{background:#2a303a;color:#fff}.title-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+@media(max-width:560px){.category-grid{grid-template-columns:1fr}.allocation-row{grid-template-columns:1fr}.smallbtn{padding:7px 9px}.goal-actions{justify-content:flex-start}}
+body:not(.authenticated) #app{display:none!important}body.authenticated #auth{display:none!important}body.authenticated #loading{display:none!important}</style><style>
+body:not(.authenticated) .nav{display:none}
+</style>
+
+<style>
+/* vNext+ people/budget/insights polish */
+.people-metrics{grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}
+.people-metrics span{min-width:0;padding:8px 9px;font-size:10px}
+.people-metrics b{font-size:12px}
+.people-net-note{margin-top:8px}
+.budget-main{width:100%;min-width:0}
+.budget-progress-line{display:grid;grid-template-columns:minmax(0,1fr) 52px;gap:10px;align-items:center}
+.budget-progress-line .progress{margin:7px 0 4px}
+.budget-amounts{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:7px}
+.budget-amounts span{font-size:10px;color:var(--muted);padding:7px 8px;border-radius:10px;background:var(--bg)}
+.budget-amounts .budget-amount{border:1px solid transparent;font-weight:650}
+.budget-amounts .budget-spent{background:var(--redbg);border-color:#f0d5d4}
+.budget-amounts .budget-limit{background:var(--lav);border-color:#ddd6f5}
+.budget-amounts .budget-remaining{background:var(--mintbg);border-color:#d4eadc}
+.budget-amounts .budget-remaining-over{background:var(--redbg);border-color:#f0d5d4}
+.budget-amounts b{display:block;margin-top:2px;font-size:12px}
+.more-person-icon{width:30px;height:30px;border-radius:10px;background:var(--lav);display:grid;place-items:center;color:var(--purple)}
+.more-person-icon svg{width:21px;height:21px}
+.calendar-event-section{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+@media(max-width:600px){.people-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.budget-row{align-items:flex-start}.budget-amounts{grid-template-columns:repeat(3,1fr)}.budget-row>.action-row{flex-direction:column}.recurring-account-row{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div id="loading" class="loading">Loading My Budget…</div>
+<div id="auth" class="auth hidden"><div class="authbox">
+  <div><span class="branddot"></span><span class="month">PERSONAL FINANCE</span></div><h1>My Budget</h1>
+  <p id="authText">Sign in to your budget. Your financial data is stored in your Supabase cloud database.</p><div id="authNotice" class="notice hidden"></div>
+  <form id="authForm"><label>Email</label><input id="email" type="email" required autocomplete="email"><label>Password</label><input id="password" type="password" required minlength="6" autocomplete="current-password"><button class="primary" id="authSubmit">Sign in</button></form>
+  <button type="button" class="link auth-forgot" id="forgotPassword">Forgot password?</button>
+  <button class="secondary" id="toggleAuth">Create account</button><button class="secondary" onclick="openConfig()">Supabase connection settings</button>
+</div></div>
+<div id="app" class="app hidden">
+  <div class="top"><div><div class="brandline"><span class="branddot"></span><span>PERSONAL FINANCE</span></div><div class="title">My Budget</div><div class="title-meta"><div class="month" id="monthLabel"></div><div class="greeting" id="greetingText"></div></div></div><button class="icon settings-icon" aria-label="Settings" onclick="openModal('settings')">⚙️</button></div>
+  <section id="home" class="page active">
+    <div class="hero"><div class="label">NET BALANCE</div><div class="balance" id="totalBalance">₹0</div><div class="stats"><div class="stat"><div class="label">INCOME</div><b id="monthIncome">₹0</b></div><div class="stat"><div class="label">SPENT</div><b id="monthSpent">₹0</b></div><div class="stat"><div class="label">SAVED</div><b id="monthSaved">₹0</b></div></div></div><div class="home-people-stats" id="homePeopleStats"></div>
+    <div class="quick"><button onclick="openModal('expense')"><span>−</span>Expense</button><button onclick="openModal('income')"><span>＋</span>Income</button><button onclick="openModal('transfer')"><span>⇄</span>Transfer</button><button onclick="openModal('split')"><span>🔀</span>Split</button><button onclick="openMoneyHeld()"><span>💼</span>Held</button><button onclick="openModal('loan')"><span>🤝</span>Lend / Borrow</button></div>
+    <div class="section"><h2>Pending reminders</h2><span class="link" onclick="showPage('reminders')">View all</span></div><div class="card" id="homeReminders"></div>
+    <div class="section"><h2>Monthly budget</h2><span class="link" onclick="showPage('budgets')">Manage</span></div><div class="card" id="homeBudget"></div>
+    <div class="section"><div class="section-heading"><h2>Goals</h2><span class="page-date" id="goalsDate"></span></div><span class="link" onclick="showPage('goals')">View all</span></div><div class="card" id="homeGoals"></div>
+    <div class="section"><h2>People</h2><span class="link" onclick="showPage('people')">View all</span></div><div class="card" id="homePeople"></div>
+    <div class="section"><h2>Recent transactions</h2><span class="link" onclick="showPage('transactions')">View all</span></div><div class="card" id="homeRecent"></div>
+  </section>
+  <section id="transactions" class="page"><div class="section"><div class="section-heading"><h2>Transactions</h2><span class="page-date" id="transactionsDate"></span></div><button class="icon" onclick="openModal('expense')">＋</button></div><div class="toolbar" id="filters"></div><div class="card" id="txList"></div></section>
+  <section id="accounts" class="page"><div class="section"><div class="section-heading"><h2>Accounts</h2><span class="page-date" id="accountsDate"></span></div><button class="icon" onclick="openModal('account')">＋</button></div><div class="card" id="accountList"></div></section>
+  <section id="budgets" class="page"><div class="section"><div class="section-heading"><h2>Budgets</h2><span class="page-date" id="budgetsDate"></span></div><button class="icon" onclick="openModal('budget')">＋</button></div><div class="tabs" id="budgetTabs"></div><div class="card" id="budgetList"></div></section>
+  <section id="calendar" class="page"><div class="section"><div class="section-heading"><h2>Calendar</h2><span class="page-date" id="calendarDate"></span></div><button class="icon" onclick="openModal('reminder')">＋</button></div><div class="card"><div class="calendar-head"><button class="smallbtn" onclick="moveCal(-1)">‹</button><div class="calendar-title" id="calTitle"></div><button class="smallbtn" onclick="moveCal(1)">›</button></div><div class="cal" id="calGrid"></div></div><div class="card" id="selectedDay"></div></section>
+  <section id="reminders" class="page"><div class="section"><div class="section-heading"><h2>Reminders</h2><span class="page-date" id="remindersDate"></span></div><button class="icon" onclick="openModal('reminder')">＋</button></div><div class="card" id="remindersPageList"></div></section>
+  <section id="goals" class="page"><div class="section"><div class="section-heading"><h2>Goals</h2><span class="page-date" id="goalsDate"></span></div><button class="icon" onclick="openModal('goal')">＋</button></div><div class="card" id="goalList"></div></section>
+  <section id="split" class="page"><div class="section"><div class="section-heading"><h2>Split</h2><span class="page-date" id="splitDate"></span></div><div><button class="smallbtn" onclick="openModal('person')">＋ Person</button> <button class="icon" onclick="openModal('split')">＋</button></div></div><div class="card" id="splitList"></div></section>
+<section id="moneyheld" class="page"><div class="section"><div class="section-heading"><h2>Money Held</h2><span class="page-date" id="moneyHeldDate"></span></div><div><button class="smallbtn" onclick="openModal('person')">＋ Person</button> <button class="icon" onclick="openMoneyHeld()">＋</button></div></div><div id="moneyHeldSummary" class="card"></div><div class="card" id="moneyHeldList"></div></section>
+<section id="people" class="page"><div class="section"><div class="section-heading"><h2>People</h2><span class="page-date" id="peopleDate"></span></div><button class="icon" onclick="openModal('person')">＋</button></div><div class="card" id="peopleSummary"></div><div class="section"><h3>People overview</h3></div><div id="peopleOverview"></div><div class="section"><h3>Contacts</h3></div><div class="card" id="peopleList"></div></section>
+  <section id="loans" class="page"><div class="section"><div class="section-heading"><h2>Lend & Borrow</h2><span class="page-date" id="loansDate"></span></div><div><button class="icon" onclick="openModal('loan')">＋</button></div></div><div class="notice">Track money you lend and money you borrow separately from income and expenses.</div><div id="loansSummary" class="card"></div><div class="card" id="loanList"></div><div class="section"><h2>People</h2><button class="smallbtn" onclick="openModal('person')">＋ Add person</button></div></section>
+  <section id="insights" class="page"><div class="section"><div class="section-heading"><h2>Insights</h2><span class="page-date" id="insightsDate"></span></div></div><div class="period-select"><select id="insightMonth" aria-label="Insight month"></select><select id="insightYear" aria-label="Insight year" class="hidden"></select></div><div class="tabs" id="insightTabs"><button class="active" onclick="setInsightMode('monthly')">Monthly</button><button onclick="setInsightMode('yearly')">Yearly</button></div><div class="kpi" id="insightKpi"></div><div id="insightContent"></div></section>
+  <section id="more" class="page"><div class="section"><div class="section-heading"><h2>More</h2><span class="page-date" id="moreDate"></span></div></div><div class="card">
+    <div class="row" onclick="showPage('calendar')"><div class="left"><div class="bubble">🗓️</div><div><div class="name">Calendar & reminders</div><div class="sub">Daily activity and upcoming bills</div></div></div><b>›</b></div>
+    <div class="row" onclick="showPage('reminders')"><div class="left"><div class="bubble reminder">🔔</div><div><div class="name">Reminders</div><div class="sub">All pending and completed reminders</div></div></div><b>›</b></div>
+    <div class="row" onclick="showPage('people')"><div class="left"><div class="more-person-icon" aria-hidden="true"><svg viewBox="0 0 48 48"><circle cx="18" cy="18" r="7" fill="currentColor"/><path d="M7 37c1-8 5-12 11-12s10 4 11 12" fill="currentColor" opacity=".75"/><circle cx="33" cy="21" r="6" fill="currentColor" opacity=".55"/><path d="M25 37c.7-6 4-9 8-9s7 3 8 9" fill="currentColor" opacity=".4"/></svg></div><div><div class="name">People</div><div class="sub">Split, held, lend/borrow and contacts</div></div></div><b>›</b></div>
+    <div class="row" onclick="showPage('goals')"><div class="left"><div class="bubble goal">🎯</div><div><div class="name">Goals</div><div class="sub">Savings targets and ETA</div></div></div><b>›</b></div>
+    <div class="row" onclick="showPage('split')"><div class="left"><div class="bubble split">🔀</div><div><div class="name">Split bills</div><div class="sub">Shared bills, your share and reimbursements</div></div></div><b>›</b></div>
+    <div class="row" onclick="showPage('loans')"><div class="left"><div class="bubble loan">🤝</div><div><div class="name">Lend & Borrow</div><div class="sub">See who owes you and who you owe</div></div></div><b>›</b></div><div class="row" onclick="showPage('moneyheld')"><div class="left"><div class="bubble held">💼</div><div><div class="name">Money Held</div><div class="sub">Money belonging to others in your accounts</div></div></div><b>›</b></div>
+    <div class="row" onclick="showPage('insights')"><div class="left"><div class="bubble">📊</div><div><div class="name">Insights</div><div class="sub">Patterns, comparisons and forecasts</div></div></div><b>›</b></div>
+    <div class="row" onclick="openModal('category')"><div class="left"><div class="bubble">🏷️</div><div><div class="name">Categories</div><div class="sub">Parent categories and subcategories</div></div></div><b>›</b></div>
+    <div class="row" onclick="showPage('recurring')"><div class="left"><div class="bubble">🔁</div><div><div class="name">Recurring transactions</div><div class="sub">Auto-create regular bills/income</div></div></div><b>›</b></div>
+    <div class="row" onclick="openModal('settings')"><div class="left"><div class="bubble">☁️</div><div><div class="name">Data, export & theme</div><div class="sub">Excel, PDF, JSON, currency and appearance</div></div></div><b>›</b></div>
+    <div class="row" onclick="signOut()"><div class="left"><div class="bubble">↪</div><div><div class="name">Sign out</div></div></div><b>›</b></div>
+  </div></section>
+  <section id="recurring" class="page"><div class="section"><div class="section-heading"><h2>Recurring transactions</h2><span class="page-date" id="recurringDate"></span></div><button class="icon" onclick="openModal('recurring')">＋</button></div><div class="notice">Recurring items are automatically generated when you open the app and are due. You can also generate due items manually.</div><button class="secondary" id="generateDueLabel" onclick="processRecurring(true)">Generate due items</button><div class="sub recurring-help">Creates missing due occurrences for recurring schedules. It does not mark money as spent until you use the occurrence as a transaction.</div><div class="card" id="recurringList"></div></section>
+</div>
+<nav class="nav"><button data-p="home" class="active" onclick="showPage('home')"><span>⌂</span>Home</button><button data-p="transactions" onclick="showPage('transactions')"><span>↕</span>Transactions</button><button data-p="accounts" onclick="showPage('accounts')"><span>▣</span>Accounts</button><button data-p="budgets" onclick="showPage('budgets')"><span>◴</span>Budgets</button><button data-p="more" onclick="showPage('more')"><span>•••</span>More</button></nav>
+<div class="modal" id="modal" onclick="if(event.target===this)closeModal()"><div class="sheet"><button class="close" onclick="closeModal()">×</button><div id="modalBody"></div></div></div>
+
+
+<style>
+.mb-toast{position:fixed;left:50%;bottom:90px;transform:translate(-50%,20px);opacity:0;z-index:10000;padding:12px 18px;border-radius:14px;background:#1d1a24;color:#fff;box-shadow:0 12px 30px rgba(0,0,0,.18);font-weight:700;pointer-events:none;transition:.22s}.mb-toast.show{opacity:1;transform:translate(-50%,0)}.mb-toast.error{background:#8d3535}.mb-busy{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:10001;background:var(--ink);color:var(--card);padding:8px 14px;border-radius:999px;font-size:13px;font-weight:700;display:none;box-shadow:0 8px 22px rgba(0,0,0,.15);pointer-events:none}.mb-busy.show{display:block}.mb-busy.show{display:block}.action-row{display:flex;gap:7px;align-items:center;flex-wrap:wrap;justify-content:flex-end}.goal-card,.person-card,.loan-person-card,.recurring-card{padding:18px;border:1px solid var(--line);border-radius:20px;background:var(--card);margin-bottom:10px}.goal-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}.goal-progress-line{display:grid;grid-template-columns:1fr 46px;gap:10px;align-items:center;margin-top:14px}.goal-progress-line>b{text-align:right}.goal-amounts{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.goal-amounts span{font-size:11px;color:var(--muted);display:flex;flex-direction:column;gap:3px}.goal-amounts b{font-size:13px;color:var(--ink)}.person-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.person-metrics span{padding:9px 10px;border-radius:12px;background:var(--bg);font-size:11px;color:var(--muted)}.person-metrics b{display:block;color:var(--ink);font-size:13px;margin-top:2px}.loan-direction-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}.loan-direction-grid>div{padding:12px;border:1px solid var(--line);border-radius:15px}.loan-direction-grid b{display:block;font-size:20px;margin:5px 0}.loan-direction-grid small{display:block;color:var(--muted);line-height:1.4}.loan-actions{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap}.loan-record{display:flex;justify-content:space-between;gap:10px;border-top:1px solid var(--line);padding-top:10px;margin-top:10px;font-size:12px}.due-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;align-items:center}.recurring-help{margin:8px 2px 14px}.calendar-dot{font-size:14px;line-height:1;position:absolute;right:6px;bottom:5px}.reminder-dot{font-size:11px}.section-title-inline{display:flex;justify-content:space-between;align-items:center;font-weight:800;font-size:18px;padding:14px 4px 8px}.section-title-inline span{font-size:12px;padding:4px 9px;border-radius:999px;background:var(--lav);color:var(--purple)}.selected-reminders{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}.selected-reminders>b{display:block;margin-bottom:8px}.filter-button{font-weight:800}.account-allocation{margin-top:6px}.allocation-total{display:flex;align-items:center;justify-content:space-between;padding:12px;border:1px solid var(--line);border-radius:12px}.allocation-row{margin-bottom:8px}.tree .row{padding:8px 0}.dark .mb-busy{background:#fff;color:#1b1822}@media(max-width:560px){.goal-head{flex-direction:column}.goal-actions{width:100%;justify-content:flex-start}.goal-amounts{grid-template-columns:repeat(2,1fr)}.loan-direction-grid{grid-template-columns:1fr}.person-metrics{grid-template-columns:1fr}.action-row .smallbtn{padding:8px 10px}.quick{grid-template-columns:repeat(2,1fr)!important}.toolbar{overflow-x:auto;scrollbar-width:thin}}
+</style>
+<style>
+.home-people-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:12px 0}.home-people-stats>div{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:10px}.home-people-stats span{display:block;color:var(--muted);font-size:10px}.home-people-stats b{display:block;margin-top:4px;font-size:14px}.home-people-stats .receivable b{color:var(--mint)}.home-people-stats .held b{color:var(--amber)}.home-people-stats .owe b{color:var(--red)}.home-people-stats .split b{color:var(--purple)}.home-people-stats .lend b{color:var(--green,#59a77e)}.bubble.goal{background:#e8e1ff!important}.bubble.person{background:#efe9ff}.recurring-options.hidden{display:none!important}.recurring-account-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.people-summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.people-summary-grid>div{padding:14px;border:1px solid var(--line);border-radius:15px;background:var(--card)}.people-summary-grid span{display:block;color:var(--muted);font-size:10px}.people-summary-grid b{display:block;margin-top:5px;font-size:17px}.contact-row{display:flex;justify-content:space-between;gap:10px;padding:12px 0;border-bottom:1px solid var(--line)}.contact-row:last-child{border-bottom:0}@media(max-width:700px){.home-people-stats{grid-template-columns:repeat(2,1fr)}.people-summary-grid{grid-template-columns:repeat(2,1fr)}.recurring-account-row{grid-template-columns:1fr}}
+.budget-progress-line .badge{font-size:17px;padding:3px 8px;min-width:48px;text-align:center}.person-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}.account-type-group{margin-bottom:14px}.account-type-title{font-size:13px;font-weight:850;letter-spacing:.3px;margin:4px 2px 7px;color:var(--muted);text-transform:uppercase}.account-card{padding:15px 16px}.account-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:9px}.account-metrics>div{background:var(--bg);border-radius:11px;padding:8px}.account-metrics span{display:block;color:var(--muted);font-size:9px}.account-metrics b{display:block;font-size:14px;margin-top:3px}.account-balance{font-size:20px;font-weight:850}.day-transaction-title{display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:15px}.day-transaction-count{font-size:12px;padding:5px 9px;border-radius:999px;background:var(--lav);color:var(--purple);font-weight:850}.day-reminder-title{display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:15px}.day-reminder-count{font-size:12px;padding:5px 9px;border-radius:999px;background:var(--amberbg);color:var(--amber);font-weight:850}.mb-busy.delayed{display:none!important}@media(max-width:700px){.person-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.account-metrics{grid-template-columns:repeat(3,1fr)}}
+</style>
+
+<style>
+/* v12 calendar heading refinement: three selected-date sections use equal heading sizes and distinct colors. */
+.selected-recurring > b{display:none!important}
+.day-recurring-title{display:flex!important;align-items:center!important;justify-content:space-between!important;margin-top:14px!important;padding:14px 10px 10px!important;border-top:1px solid var(--line)!important;border-radius:12px!important;background:var(--bg)!important;font-weight:850!important;font-size:18px!important;line-height:1.25!important;letter-spacing:-.15px!important;color:var(--blue)!important}
+.day-reminder-title{font-size:18px!important;line-height:1.25!important;color:var(--amber)!important}
+.day-transaction-title{font-size:18px!important;line-height:1.25!important;color:var(--purple)!important}
+@media(max-width:560px){.day-recurring-title,.day-reminder-title,.day-transaction-title{font-size:16px!important}}
+</style>
+</body><style>
+/* v8 final UI fixes */
+.selected-recurring>b{font-size:18px!important;line-height:1.25!important;font-weight:800!important}
+.home-people-stats{grid-template-columns:repeat(6,minmax(0,1fr))!important}
+/* Budget amount highlighting is shared by every budget card, including embedded cards. */
+.budget-amounts .budget-spent{background:var(--redbg)!important;border-color:#f0d5d4!important}
+.budget-amounts .budget-limit{background:var(--lav)!important;border-color:#ddd6f5!important}
+.budget-amounts .budget-remaining{background:var(--mintbg)!important;border-color:#d4eadc!important}
+.budget-amounts .budget-remaining-over{background:var(--redbg)!important;border-color:#f0d5d4!important}
+.budget-amounts b{font-size:13px!important;font-weight:800!important}
+@media(max-width:700px){.home-people-stats{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+@media(min-width:701px) and (max-width:900px){.home-people-stats{grid-template-columns:repeat(3,minmax(0,1fr))!important}}
+/* v8: no busy/saving overlay */
+#mbBusy,.mb-busy{display:none!important}
+</style>
+
+<style id="v10-latest-ui-fixes">
+/* v10 — latest requested UI fixes */
+/* 1. Calendar recurring heading: exactly the same visual scale as Reminders. */
+#selectedDay .selected-recurring > b,
+#selectedDay .selected-recurring > strong {
+  font-size: 18px !important;
+  line-height: 1.25 !important;
+  font-weight: 800 !important;
+}
+
+/* 2. Home people KPIs: Split pending = Money held orange; To pay = You owe red. */
+.home-people-stats .split b,
+.home-people-stats .split strong {
+  color: var(--amber) !important;
+}
+.home-people-stats .payable b,
+.home-people-stats .payable strong {
+  color: var(--red) !important;
+}
+
+/* 3. Budget cards: make all three amounts clearly highlighted. */
+.budget-amounts {
+  gap: 9px !important;
+}
+.budget-amounts .budget-amount {
+  display: block !important;
+  padding: 10px 11px !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 11px !important;
+  font-size: 10px !important;
+  font-weight: 750 !important;
+}
+.budget-amounts .budget-amount b {
+  display: block !important;
+  margin-top: 4px !important;
+  font-size: 14px !important;
+  line-height: 1.15 !important;
+  font-weight: 900 !important;
+}
+.budget-amounts .budget-spent {
+  background: var(--redbg) !important;
+  border-color: #f0d5d4 !important;
+}
+.budget-amounts .budget-spent b { color: var(--red) !important; }
+.budget-amounts .budget-limit {
+  background: var(--lav) !important;
+  border-color: #ddd6f5 !important;
+}
+.budget-amounts .budget-limit b { color: var(--purple) !important; }
+.budget-amounts .budget-remaining {
+  background: var(--mintbg) !important;
+  border-color: #d4eadc !important;
+}
+.budget-amounts .budget-remaining b { color: var(--mint) !important; }
+.budget-amounts .budget-remaining-over {
+  background: var(--redbg) !important;
+  border-color: #f0d5d4 !important;
+}
+.budget-amounts .budget-remaining-over b { color: var(--red) !important; }
+</style>
+
+</html>
+<style>
+/* v21 — consistent colourful person avatars */
+.person-avatar{display:inline-flex;width:32px;height:32px;flex:0 0 32px;vertical-align:middle;align-items:center;justify-content:center}
+.person-avatar svg{width:32px;height:32px;display:block}
+.split-person-label{display:flex;align-items:center;gap:8px;min-width:0}
+.split-person-label .person-avatar{width:30px;height:30px;flex-basis:30px}
+.split-person-label .person-avatar svg{width:30px;height:30px}
+.bubble.person,.bubble.loan{display:grid;place-items:center}
+.bubble.person .person-avatar,.bubble.loan .person-avatar{width:34px;height:34px}
+.bubble.person .person-avatar svg,.bubble.loan .person-avatar svg{width:34px;height:34px}
+body.dark .person-avatar-other circle:first-child{fill:#3b315b}
+body.dark .person-avatar-me circle:first-child{fill:#193c31}
+body.dark .person-avatar-other circle:nth-child(2){fill:#ffab78}
+body.dark .person-avatar-me circle:nth-child(2){fill:#f5b88f}
+</style>
+<style>
+/* v7 UI polish */
+.selected-recurring>b{display:block!important;font-size:18px!important;font-weight:800!important;line-height:1.25!important;padding:12px 14px!important;border:1px solid var(--line)!important;border-radius:14px!important;background:var(--bg)!important;color:var(--amber)!important}
+.home-people-stats{grid-template-columns:repeat(6,minmax(0,1fr))!important}
+@media(max-width:900px){.home-people-stats{grid-template-columns:repeat(3,minmax(0,1fr))!important}}
+@media(max-width:480px){.home-people-stats{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+/* v7: no persistent busy/saving overlay */
+.mb-busy{display:none!important}
+</style>
+<style>
+/* v9 final UI fixes */
+/* Calendar: recurring heading intentionally matches the Reminders heading size. */
+#selectedDay .selected-recurring > b,
+#selectedDay .day-reminder-title,
+#selectedDay .day-transaction-title {
+  font-size: 18px !important;
+  line-height: 1.25 !important;
+}
+#selectedDay .selected-recurring > b {
+  display: block !important;
+  font-weight: 800 !important;
+  padding: 12px 14px !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 14px !important;
+  background: var(--bg) !important;
+  color: var(--amber) !important;
+}
+/* Home people KPIs: keep To receive and To pay on the same row on desktop. */
+.home-people-stats {
+  display: grid !important;
+  grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+}
+.home-people-stats > div { min-width: 0 !important; }
+/* Budget amount blocks: make the three figures visibly highlighted and readable. */
+.budget-amounts .budget-amount {
+  padding: 9px 10px !important;
+  border-width: 1px !important;
+  font-weight: 700 !important;
+}
+.budget-amounts .budget-amount b {
+  font-size: 14px !important;
+  font-weight: 850 !important;
+}
+.budget-amounts .budget-spent b { color: var(--red) !important; }
+.budget-amounts .budget-limit b { color: var(--purple) !important; }
+.budget-amounts .budget-remaining b { color: var(--green) !important; }
+/* The old busy indicator is retired completely. Toasts remain for success/error feedback. */
+#mbBusy, .mb-busy { display: none !important; visibility: hidden !important; }
+</style>
