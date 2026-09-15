@@ -232,48 +232,6 @@ body:not(.authenticated) .nav{display:none}
   #modal form .mode button{font-size:12px;padding-left:5px;padding-right:5px;}
 }
 </style>
-
-<style>
-/* Mobile recurring checkbox — keep the label text visible and aligned */
-#modal form label.checkrow{
-  display:flex !important;
-  flex-direction:row !important;
-  align-items:center !important;
-  justify-content:flex-start !important;
-  width:100% !important;
-  min-width:0 !important;
-  color:var(--muted) !important;
-  white-space:normal !important;
-  overflow:visible !important;
-  gap:9px !important;
-}
-#modal form label.checkrow input[type="checkbox"]{
-  display:inline-block !important;
-  visibility:visible !important;
-  opacity:1 !important;
-  width:18px !important;
-  height:18px !important;
-  min-width:18px !important;
-  min-height:18px !important;
-  margin:0 !important;
-  flex:0 0 18px !important;
-}
-@media(max-width:560px){
-  #modal form label.checkrow{
-    font-size:14px !important;
-    line-height:20px !important;
-    margin:14px 0 8px !important;
-    padding:2px 0 !important;
-  }
-  #modal form label.checkrow input[type="checkbox"]{
-    width:20px !important;
-    height:20px !important;
-    min-width:20px !important;
-    min-height:20px !important;
-    flex-basis:20px !important;
-  }
-}
-</style>
 </head>
 <body>
 <div id="loading" class="loading">Loading My Budget…</div>
