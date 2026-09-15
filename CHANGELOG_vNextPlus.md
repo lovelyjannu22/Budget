@@ -1,3 +1,9 @@
+## v14 — Mobile transaction entry forms
+- Made Income, Expense, Transfer, Split and Recurring entry forms responsive on phones.
+- Removed horizontal overflow by stacking grouped fields on small screens.
+- Improved split-person rows and touch targets for narrow screens.
+- Preserved existing transaction calculations and Supabase logic.
+
 ## v10 latest UI fixes
 - Calendar recurring heading matches Reminders size.
 - Split pending amount uses the same orange as Money held.

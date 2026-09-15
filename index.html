@@ -131,6 +131,107 @@ body:not(.authenticated) .nav{display:none}
   .transaction-row .smallbtn{font-size:9.5px;padding:5px 6px;}
 }
 </style>
+
+<style id="mobile-transaction-forms-v14">
+/* v14 — responsive transaction-entry forms
+   Income, Expense, Transfer, Split and Recurring forms use a single-column,
+   touch-friendly layout on phones and never create horizontal scrolling. */
+#modal,
+#modal .sheet,
+#modal #modalBody,
+#modal form{min-width:0;max-width:100%;box-sizing:border-box;}
+#modal .sheet{overflow-x:hidden;overscroll-behavior-x:none;}
+#modal form input,
+#modal form select,
+#modal form textarea,
+#modal form button{max-width:100%;box-sizing:border-box;}
+#modal form .two,
+#modal form .three,
+#modal form .category-grid,
+#modal form .period-select,
+#modal form .recurring-account-row,
+#modal form .person-grid,
+#modal form .loan-direction-grid{min-width:0;}
+#modal form .two > *,
+#modal form .three > *,
+#modal form .category-grid > *,
+#modal form .period-select > *,
+#modal form .recurring-account-row > *,
+#modal form .person-grid > *,
+#modal form .loan-direction-grid > *{min-width:0;}
+#modal form .mode{min-width:0;}
+#modal form .mode button{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:normal;}
+#modal form .checkrow{min-width:0;line-height:1.35;}
+#modal form .checkrow input{flex:0 0 auto;}
+
+@media(max-width:560px){
+  #modal{align-items:flex-end;overflow:hidden;}
+  #modal .sheet{
+    width:100%;
+    max-width:100%;
+    max-height:96dvh;
+    padding:16px 14px calc(22px + env(safe-area-inset-bottom));
+    border-radius:24px 24px 0 0;
+    overflow-x:hidden;
+    overflow-y:auto;
+  }
+  #modal .sheet h2{font-size:20px;line-height:1.25;margin-right:42px;}
+  #modal form{width:100%;overflow:visible;}
+  #modal form label{font-size:11px;margin:12px 0 6px;}
+  #modal form input,
+  #modal form select,
+  #modal form textarea{width:100%;min-width:0;font-size:16px;min-height:46px;}
+  #modal form textarea{min-height:82px;}
+
+  /* Any paired/triple field group stacks vertically on phones. */
+  #modal form .two,
+  #modal form .three,
+  #modal form .category-grid,
+  #modal form .period-select,
+  #modal form .recurring-account-row,
+  #modal form .loan-direction-grid{
+    grid-template-columns:1fr !important;
+    gap:0 !important;
+  }
+  #modal form .two > *,
+  #modal form .three > *,
+  #modal form .category-grid > *,
+  #modal form .period-select > *,
+  #modal form .recurring-account-row > *,
+  #modal form .loan-direction-grid > *{width:100%;}
+
+  /* Split-person rows: person selector, share and remove action stay inside the card. */
+  #modal form .person-grid{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) 88px 38px !important;
+    gap:6px !important;
+    align-items:center;
+  }
+  #modal form .person-grid .split-person-label{min-width:0;overflow:hidden;}
+  #modal form .person-grid .split-person-label select{width:100%;min-width:0;}
+  #modal form .person-grid input{width:100%;min-width:0;padding-left:9px;padding-right:9px;}
+  #modal form .person-grid .smallbtn{width:38px;min-width:38px;padding:7px 5px;}
+
+  /* Three-way mode controls remain usable without forcing a horizontal scroll. */
+  #modal form .mode{grid-template-columns:repeat(2,minmax(0,1fr)) !important;gap:7px !important;}
+  #modal form .mode button{width:100%;min-height:44px;padding:9px 7px;}
+
+  #modal form .primary,
+  #modal form .secondary{width:100%;min-height:48px;}
+  #modal form .recurring-options{width:100%;min-width:0;padding:9px;}
+  #modal form .recurring-options select,
+  #modal form .recurring-options input{width:100%;}
+  #modal form .split-summary,
+  #modal form .notice{overflow-wrap:anywhere;word-break:break-word;}
+}
+
+@media(max-width:380px){
+  #modal .sheet{padding-left:12px;padding-right:12px;}
+  #modal form .person-grid{grid-template-columns:minmax(0,1fr) 76px 36px !important;}
+  #modal form .person-grid .smallbtn{width:36px;min-width:36px;}
+  #modal form .mode button{font-size:12px;padding-left:5px;padding-right:5px;}
+}
+</style>
 </head>
 <body>
 <div id="loading" class="loading">Loading My Budget…</div>
