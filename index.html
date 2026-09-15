@@ -161,8 +161,9 @@ body:not(.authenticated) .nav{display:none}
 #modal form .loan-direction-grid > *{min-width:0;}
 #modal form .mode{min-width:0;}
 #modal form .mode button{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:normal;}
-#modal form .checkrow{min-width:0;line-height:1.35;}
-#modal form .checkrow input{flex:0 0 auto;}
+#modal form .checkrow{display:flex !important;align-items:center !important;gap:9px !important;min-width:0 !important;width:100% !important;line-height:1.35 !important;white-space:normal !important;}
+#modal form .checkrow input{flex:0 0 auto !important;width:20px !important;min-width:20px !important;height:20px !important;margin:0 !important;}
+#modal form .checkrow::after{content:'';display:block;min-width:0;}
 
 @media(max-width:560px){
   #modal{align-items:flex-end;overflow:hidden;}

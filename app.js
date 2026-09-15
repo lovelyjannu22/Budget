@@ -15,7 +15,7 @@ function getNickname(){return (localStorage.getItem(nicknameKey())||'').trim()}
 
 function showLoading(on=true,msg='Loading My Budget…'){$('loading').classList.toggle('hidden',!on);if(msg)$('loading').textContent=msg}function setAuthGate(isAuthenticated){document.body.classList.toggle('authenticated',Boolean(isAuthenticated));$('app').classList.toggle('hidden',!isAuthenticated);$('auth').classList.toggle('hidden',Boolean(isAuthenticated));$('loading').classList.add('hidden')}
 function notice(msg,type='notice',target='authNotice'){const e=$(target);if(!e)return;e.className='notice '+type;e.textContent=msg;e.classList.remove('hidden')}
-function initClient(){const c=cfg();if(!c.url||!c.key||!window.supabase)return false;try{sb=window.supabase.createClient(c.url.replace(/\/$/,''),c.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});return true}catch{return false}}
+function initClient(){const c=cfg();if(!c.url||!c.key||!window.supabase)return false;try{sb=window.supabase.createClient(c.url.replace(/\/$/,''),c.key,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storage:window.localStorage}});return true}catch{return false}}
 async function requestPasswordReset(){
   if(!sb){openConfig();return}
   const email=$('email')?.value.trim()||'';
@@ -43,13 +43,79 @@ async function update(t,id,row){const {data,error}=await sb.from(t).update(row).
 async function del(t,id){const {error}=await sb.from(t).delete().eq('id',id);if(error)throw error}
 async function ensureBase(){const {data,error}=await sb.from('categories').select('id').limit(1);if(error)throw error;if(!data?.length){const parent=await insert('categories',{name:'Fixed Expenses',type:'expense',icon:'🏠',color:'#7666cf'});const rows=[['Rent','expense','🏠','#7666cf',parent.id],['Bills','expense','🧾','#6f98d8',parent.id],['Outing','expense','🍽️','#c9708b',parent.id],['Food','expense','🍔','#e5a15f',null],['Transport','expense','🚗','#5d8ed8',null],['Shopping','expense','🛍️','#c9708b',null],['Entertainment','expense','🎬','#8b7bd6',null],['Health','expense','💊','#59a77e',null],['Salary','income','💼','#59a77e',null],['Other Income','income','＋','#5d8ed8',null],['Both','both','🔄','#7666cf',null]];for(const r of rows)await insert('categories',{name:r[0],type:r[1],icon:r[2],color:r[3],parent_id:r[4],is_active:true})}}
 async function boot(){
-showLoading(true,'Connecting to your secure cloud database…');
-setAuthGate(false);
-const recoveryRedirect=isRecoveryRedirect();
-const bootTimeout=setTimeout(()=>{if(!$('loading').classList.contains('hidden')){showLoading(false);setAuthGate(false);notice('The app could not finish loading. Check your Supabase connection and internet connection, then try again.','error')}},15000);setAuthGate(false);try{if(!initClient()){clearTimeout(bootTimeout);showLoading(false);setAuthGate(false);notice('Connect your Supabase Project URL and Publishable key to start.');return}if(!sb._myBudgetRecoveryListener){sb._myBudgetRecoveryListener=true;sb.auth.onAuthStateChange((event,session)=>{if(event==='PASSWORD_RECOVERY'&&session){user=session.user;openRecoveryOnce()}})}const {data,error}=await sb.auth.getSession();if(error)throw error;if(data.session){user=data.session.user;await ensureBase();await loadData();const generated=await processRecurring(false);if(generated)await loadData();setAuthGate(true);clearTimeout(bootTimeout);showLoading(false);render();if(recoveryRedirect)openRecoveryOnce()}else{clearTimeout(bootTimeout);showLoading(false);setAuthGate(false)}}catch(e){console.error(e);clearTimeout(bootTimeout);showLoading(false);setAuthGate(false);notice(e?.message||'Unable to connect. Check Supabase URL, key, schema and RLS.','error')}}
+  showLoading(true,'Connecting to your secure cloud database…');
+  setAuthGate(false);
+  const recoveryRedirect=isRecoveryRedirect();
+  const bootTimeout=setTimeout(()=>{if(!$('loading').classList.contains('hidden')){showLoading(false);setAuthGate(false);notice('The app could not connect to Supabase. Check your internet connection and try again.','error')}},15000);
+  try{
+    if(!initClient()){clearTimeout(bootTimeout);showLoading(false);setAuthGate(false);notice('Connect your Supabase Project URL and Publishable key to start.');return}
+    if(!sb._myBudgetRecoveryListener){
+      sb._myBudgetRecoveryListener=true;
+      sb.auth.onAuthStateChange((event,session)=>{
+        if(event==='PASSWORD_RECOVERY'&&session){user=session.user;openRecoveryOnce()}
+      });
+    }
+    const {data,error}=await sb.auth.getSession();
+    if(error)throw error;
+    clearTimeout(bootTimeout);
+    if(!data.session){showLoading(false);setAuthGate(false);return}
+
+    // A valid Supabase session means the user is logged in. Do not send them
+    // back to the login screen just because a background table query is slow
+    // or temporarily fails. This also makes reopening the app feel instant.
+    user=data.session.user;
+    setAuthGate(true);
+    showLoading(false);
+    render();
+    if(recoveryRedirect)openRecoveryOnce();
+
+    // Load the user's data after the authenticated UI is already visible.
+    try{
+      await ensureBase();
+      await loadData();
+      const generated=await processRecurring(false);
+      if(generated)await loadData();
+      render();
+    }catch(dataError){
+      console.error('Background data load failed:',dataError);
+      if(typeof mbToast==='function')mbToast('Connected, but some data could not be refreshed. Please try again.','error');
+    }
+  }catch(e){
+    console.error(e);
+    clearTimeout(bootTimeout);
+    showLoading(false);
+    setAuthGate(false);
+    notice(e?.message||'Unable to connect. Check Supabase URL, key, schema and RLS.','error');
+  }
+}
 $('toggleAuth').onclick=()=>{authMode=authMode==='signin'?'signup':'signin';$('authSubmit').textContent=authMode==='signin'?'Sign in':'Create account';$('toggleAuth').textContent=authMode==='signin'?'Create account':'Back to sign in';$('authText').textContent=authMode==='signin'?'Sign in to your budget. Your financial data is stored in your Supabase cloud database. Your secure login stays active on this device until you sign out.':'Create your My Budget login. Use an email and password you control.';$('authNotice').classList.add('hidden');$('forgotPassword')?.classList.toggle('hidden',authMode!=='signin')};
 $('forgotPassword').onclick=requestPasswordReset;
-$('authForm').onsubmit=async e=>{e.preventDefault();if(!sb){openConfig();return}const email=$('email').value.trim(),password=$('password').value;$('authSubmit').disabled=true;try{if(authMode==='signup'){const r=await sb.auth.signUp({email,password});if(r.error)throw r.error;if(r.data.session){user=r.data.user;await ensureBase();await loadData();setAuthGate(true);render()}else notice('Account created. Check your email if confirmation is enabled, then sign in.','success')}else{const r=await sb.auth.signInWithPassword({email,password});if(r.error)throw r.error;user=r.data.user;await ensureBase();await loadData();setAuthGate(true);render()}}catch(e){notice(e?.message||'Authentication failed.','error')}finally{$('authSubmit').disabled=false}};
+$('authForm').onsubmit=async e=>{
+  e.preventDefault();
+  if(!sb){openConfig();return}
+  const email=$('email').value.trim(),password=$('password').value;
+  $('authSubmit').disabled=true;
+  try{
+    if(authMode==='signup'){
+      const r=await sb.auth.signUp({email,password});
+      if(r.error)throw r.error;
+      if(r.data.session){
+        user=r.data.user;
+        setAuthGate(true);showLoading(false);render();
+        try{await ensureBase();await loadData();render()}catch(err){console.error('Initial data load failed:',err);if(typeof mbToast==='function')mbToast('Signed in, but some data could not be loaded yet.','error')}
+      }else notice('Account created. Check your email if confirmation is enabled, then sign in.','success')
+    }else{
+      const r=await sb.auth.signInWithPassword({email,password});
+      if(r.error)throw r.error;
+      user=r.data.user;
+      // Authentication succeeds here; show the app immediately. Database
+      // loading continues in the background instead of blocking login.
+      setAuthGate(true);showLoading(false);render();
+      try{await ensureBase();await loadData();const generated=await processRecurring(false);if(generated)await loadData();render()}catch(err){console.error('Initial data load failed:',err);if(typeof mbToast==='function')mbToast('Signed in, but some data could not be refreshed yet.','error')}
+    }
+  }catch(e){notice(e?.message||'Authentication failed.','error')}
+  finally{$('authSubmit').disabled=false}
+};
 async function signOut(){try{await sb.auth.signOut()}finally{location.reload()}}
 function accountName(id){return state.accounts.find(x=>x.id===id)?.name||'—'} function catName(id){return state.categories.find(x=>x.id===id)?.name||'Uncategorized'} function personName(id){return state.people.find(x=>x.id===id)?.name||'—'}
 function splitMyShare(t){return Number(state.split_transactions.find(x=>x.transaction_id===t.id)?.my_share||0)}
