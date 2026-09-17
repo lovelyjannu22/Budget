@@ -766,7 +766,49 @@ function clearAllTransactionFilters(){mbFilter={type:'All',from:'',to:'',categor
 function renderTransactionsPlus(){
   const active=mbFilter.type||'All',kind=mbFilter.kind||'all';
   $('filters').innerHTML=['All','income','expense','transfer','split','reimbursement'].map(x=>`<button class="chip ${kind==='all'&&active===x?'active':''}" onclick="mbFilter.type='${x}';mbFilter.kind='all';renderTransactions()">${x==='All'?'All':x[0].toUpperCase()+x.slice(1)}</button>`).join('')+`<button class="chip ${kind==='held'?'active':''}" onclick="mbFilter.kind='held';renderTransactions()">Held for others</button><button class="chip ${kind==='lendborrow'?'active':''}" onclick="mbFilter.kind='lendborrow';renderTransactions()">Lend / Borrow</button><button class="chip filter-button" onclick="openTransactionFilters()">⚙ Filters</button><button class="chip" onclick="clearAllTransactionFilters()">Clear filters</button>`;
-  let arr=state.transactions.slice().sort((a,b)=>String(b.transaction_date).localeCompare(String(a.transaction_date)));
+  // Build the unified "All" feed. Loans/borrowings and Money Held live in their
+  // own tables, so they must be represented here as transaction-like rows too.
+  // Split records normally have a linked transactions row; only add a synthetic
+  // split row when that link is missing, preventing duplicates.
+  let arr;
+  if(kind==='all' && active==='All') {
+    const base = state.transactions.slice();
+    const linkedSplitIds = new Set(state.split_transactions.map(st=>st.transaction_id).filter(Boolean));
+    const syntheticSplits = state.split_transactions
+      .filter(st=>st.transaction_id && !base.some(t=>t.id===st.transaction_id))
+      .map(st=>({
+        id: st.transaction_id,
+        type: 'split',
+        amount: Number(st.total_amount||0),
+        description: st.description || 'Split transaction',
+        transaction_date: st.transaction_date || st.created_at || today(),
+        account_id: st.account_id || null,
+        __special: 'split',
+        __specialId: st.id
+      }));
+    const syntheticLoans = state.loans.map(l=>({
+      id: `loan-${l.id}`, type: 'loan', amount: Number(l.amount||0),
+      description: l.direction==='lend' ? `Lent to ${personName(l.person_id)}` : `Borrowed from ${personName(l.person_id)}`,
+      transaction_date: l.loan_date || l.created_at || today(), account_id:l.account_id||null,
+      notes:l.notes||'', __special:'loan', __specialId:l.id, direction:l.direction, person_id:l.person_id
+    }));
+    const syntheticRepayments = state.loan_repayments.map(r=>({
+      id: `loan-repayment-${r.id}`, type: 'loan_repayment', amount: Number(r.amount||0),
+      description: r.direction==='received' ? `Repayment received from ${personName(r.person_id)}` : `Repayment sent to ${personName(r.person_id)}`,
+      transaction_date: r.repayment_date || r.created_at || today(), account_id:r.account_id||null,
+      notes:r.notes||'', __special:'loan_repayment', __specialId:r.id, direction:r.direction, person_id:r.person_id
+    }));
+    const syntheticHeld = state.money_held.map(h=>({
+      id:`held-${h.id}`, type:'money_held', amount:Number(h.amount||0),
+      description:`Money held for ${personName(h.person_id)}`,
+      transaction_date:h.received_date || h.created_at || today(), account_id:h.account_id||null,
+      notes:h.purpose || h.notes || '', __special:'held', __specialId:h.id, status:h.status
+    }));
+    arr = [...base, ...syntheticSplits, ...syntheticLoans, ...syntheticRepayments, ...syntheticHeld]
+      .sort((a,b)=>String(b.transaction_date).slice(0,10).localeCompare(String(a.transaction_date).slice(0,10)) || String(b.created_at||'').localeCompare(String(a.created_at||'')));
+  } else {
+    arr=state.transactions.slice().sort((a,b)=>String(b.transaction_date).localeCompare(String(a.transaction_date)));
+  }
   if(kind==='all'&&active!=='All')arr=arr.filter(t=>t.type===active);
   if(mbFilter.from)arr=arr.filter(t=>String(t.transaction_date)>=mbFilter.from);
   if(mbFilter.to)arr=arr.filter(t=>String(t.transaction_date)<=mbFilter.to);
@@ -778,8 +820,26 @@ function renderTransactionsPlus(){
   if(mbFilter.kind==='recurring')arr=arr.filter(t=>t.recurring_id);
   if(mbFilter.kind==='held'){const rows=state.money_held.slice().sort((a,b)=>String(b.received_date).localeCompare(String(a.received_date)));$('txList').innerHTML=rows.map(heldHTML).join('')||'<div class="empty">No Money Held records.</div>';return}
   if(mbFilter.kind==='lendborrow'){const rows=[...state.loans.map(l=>({kind:'loan',id:l.id,date:l.loan_date,label:(l.direction==='lend'?'Lend · ':'Borrow · ')+personName(l.person_id),amount:l.amount})),...state.loan_repayments.map(r=>({kind:'repayment',id:r.id,date:r.repayment_date,label:(r.direction==='received'?'Received · ':'Repaid · ')+personName(r.person_id),amount:r.amount}))].sort((a,b)=>String(b.date).localeCompare(String(a.date)));$('txList').innerHTML=rows.map(r=>`<div class="row"><div><div class="name">${esc(r.label)}</div><div class="sub">${fmtDate(r.date)}</div></div><div><b>${money(r.amount)}</b><button class="smallbtn" onclick="${r.kind==='loan'?`editLoan('${r.id}')`:`editLoanRepayment('${r.id}')`}">Edit</button><button class="smallbtn dangerbtn" onclick="${r.kind==='loan'?`deleteLoan('${r.id}')`:`deleteLoanRepayment('${r.id}')`}">Delete</button></div></div>`).join('')||'<div class="empty">No lend/borrow records.</div>';return}
-  $('txList').innerHTML=arr.map(txHTML).join('')||'<div class="empty">No transactions found.</div>';
+  const specialRowHTML=t=>{
+    if(!t.__special)return txHTML(t);
+    const meta=t.__special==='held' ? `${t.status==='settled'?'Settled':'Pending'} · Money Held`
+      : t.__special==='loan' ? (t.direction==='lend'?'Lend':'Borrow')
+      : t.__special==='loan_repayment' ? (t.direction==='received'?'Loan repayment received':'Loan repayment sent')
+      : 'Split';
+    const icon=t.__special==='held'?'💰':t.__special==='loan'?'↔':t.__special==='loan_repayment'?'↩':'🔀';
+    const cls=t.__special==='held'?'amber':t.__special==='loan'?'transfer':t.__special==='loan_repayment'?'income':'split';
+    let actions='';
+    if(t.__special==='held') actions=`<button class="smallbtn" onclick="editMoneyHeld('${t.__specialId}')">Edit</button><button class="smallbtn" onclick="toggleMoneyHeld('${t.__specialId}')">${t.status==='settled'?'Undo':'Settle'}</button><button class="smallbtn dangerbtn" onclick="deleteMoneyHeld('${t.__specialId}')">Delete</button>`;
+    else if(t.__special==='loan') actions=`<button class="smallbtn" onclick="editLoan('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteLoan('${t.__specialId}')">Delete</button>`;
+    else if(t.__special==='loan_repayment') actions=`<button class="smallbtn" onclick="editLoanRepayment('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteLoanRepayment('${t.__specialId}')">Delete</button>`;
+    else if(t.__special==='split' && t.__specialId) actions=`<button class="smallbtn" onclick="editSplitSpecial('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteSplitSpecial('${t.__specialId}')">Delete</button>`;
+    const stamp=`<div class="sub timestamp-meta">Recorded ${esc(fmtDateTime(t.created_at))}${t.updated_at?' · Updated '+esc(fmtDateTime(t.updated_at)):''}</div>`;
+    return `<div class="row transaction-row"><div class="left"><div class="bubble ${cls}">${icon}</div><div class="tx-content"><div class="name">${esc(t.description)}</div><div class="sub">${fmtDate(t.transaction_date)}${t.account_id?' · '+esc(accountName(t.account_id)):''} · ${esc(meta)}</div>${t.notes?`<div class="sub">${esc(t.notes)}</div>`:''}${stamp}</div></div><div class="tx-right" style="text-align:right"><b>${money(t.amount)}</b><div class="action-row">${actions}</div></div></div>`;
+  };
+  $('txList').innerHTML=arr.map(specialRowHTML).join('')||'<div class="empty">No transactions found.</div>';
 }
+async function editSplitSpecial(id){const st=state.split_transactions.find(x=>x.id===id);if(!st)return;const tx=state.transactions.find(x=>x.id===st.transaction_id);if(tx)return editTx(tx.id);mbToast('This split record has no linked transaction to edit.','error')}
+async function deleteSplitSpecial(id){const st=state.split_transactions.find(x=>x.id===id);if(!st)return;if(!confirm('Delete this split transaction?'))return;try{const txId=st.transaction_id;await sb.from('split_participants').delete().eq('split_transaction_id',id);await del('split_transactions',id);if(txId){await del('transactions',txId);removeLocal('transactions',txId)}removeLocal('split_transactions',id);state.split_participants=(state.split_participants||[]).filter(x=>x.split_transaction_id!==id);render();mbToast('Split transaction deleted.')}catch(e){mbToast(friendlyError(e),'error')}}
 renderTransactions=renderTransactionsPlus;
 
 function recurringFieldsHTML(data){
@@ -1263,4 +1323,130 @@ exportPDF=exportPDFPlus;
     }
   `;
   document.head.appendChild(s);
+})();
+
+/* ===== Editable transaction time + last-updated timestamp ===== */
+(function(){
+  const pad=n=>String(n).padStart(2,'0');
+  function currentLocalDT(){
+    const d=new Date();
+    const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d);
+    const p=Object.fromEntries(parts.map(x=>[x.type,x.value]));
+    return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+  }
+  function isoToLocalDT(iso){
+    if(!iso)return currentLocalDT();
+    const d=new Date(iso); if(isNaN(d))return currentLocalDT();
+    const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d);
+    const p=Object.fromEntries(parts.map(x=>[x.type,x.value]));
+    return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+  }
+  function localDTToISO(v){
+    if(!v)return new Date().toISOString();
+    // The app is designed for India time; preserve the selected IST wall-clock time.
+    const m=String(v).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    if(!m)return new Date().toISOString();
+    return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00+05:30`;
+  }
+  function stampField(data){
+    const value=isoToLocalDT(data?.created_at);
+    return `<label>Transaction date & time</label><input name="transaction_timestamp" type="datetime-local" step="60" value="${value}" required><div class="sub timestamp-help">Defaults to the current time. You can change it to the actual time the transaction happened.</div>`;
+  }
+  function updatedLabel(iso){return iso?` · Updated ${esc(fmtDateTime(iso))}`:''}
+  window.fmtDateTime=function(iso){
+    if(!iso)return '';
+    const d=new Date(iso); if(isNaN(d))return '';
+    return new Intl.DateTimeFormat('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true,timeZone:'Asia/Kolkata'}).format(d);
+  };
+  window.__mbTimestamp={localDTToISO,isoToLocalDT,currentLocalDT,stampField};
+
+  // Add the editable timestamp to transaction-related forms after the app opens them.
+  const _openModal=window.openModal;
+  window.openModal=function(type,data=null){
+    const result=_openModal(type,data);
+    const needs=['income','expense','transfer','split','loan','loanRepayment','loanRepaymentEdit','repayment','repaymentEdit','moneyHeld'].includes(type);
+    if(!needs)return result;
+    const f=$('f'); if(!f||f.dataset.timestampPatched==='1')return result;
+    const anchor=f.elements.transaction_date||f.elements.loan_date||f.elements.repayment_date||f.elements.reimbursement_date||f.elements.received_date;
+    if(!anchor)return result;
+    const wrap=document.createElement('div');
+    wrap.innerHTML=stampField(data);
+    anchor.closest('label')?.after(wrap);
+    if(!anchor.closest('label'))anchor.after(wrap);
+    f.dataset.timestampPatched='1';
+    return result;
+  };
+
+  // Inject timestamps into save operations without changing the existing business logic.
+  const _saveModal=window.saveModal;
+  window.saveModal=async function(type,data,f){
+    const timestamp=f?.elements?.transaction_timestamp?.value;
+    const result=await _saveModal(type,data,f);
+    if(!timestamp||!sb||!user)return result;
+    const createdAt=localDTToISO(timestamp), now=new Date().toISOString();
+    try{
+      if(type==='income'||type==='expense'||type==='transfer'||type==='split'||type==='repayment'||type==='repaymentEdit'){
+        const txId= type==='split' ? (result?.id||data?.transaction_id) : (result?.id||data?.id);
+        if(txId) await sb.from('transactions').update({created_at:createdAt,updated_at:now}).eq('id',txId).eq('user_id',user.id);
+      } else if(type==='loan' && (result?.id||data?.id)) {
+        await sb.from('loans').update({created_at:createdAt,updated_at:now}).eq('id',result?.id||data.id).eq('user_id',user.id);
+      } else if(type==='loanRepayment' && (result?.id||data?.id)) {
+        await sb.from('loan_repayments').update({created_at:createdAt,updated_at:now}).eq('id',result?.id||data.id).eq('user_id',user.id);
+      }
+    }catch(e){console.warn('Timestamp bookkeeping skipped:',e)}
+    return result;
+  };
+
+  // Money Held uses its own submit handler, so patch the form after it is created.
+  const _openMoney=window.openModal;
+  window.openModal=function(type,data=null){
+    const r=_openMoney(type,data);
+    if(type==='moneyHeld'){
+      const f=$('f');
+      if(f&&!f.dataset.timestampPatched){
+        const anchor=f.elements.received_date;
+        if(anchor){
+          const wrap=document.createElement('div');wrap.innerHTML=stampField(data);anchor.closest('label')?.after(wrap);if(!anchor.closest('label'))anchor.after(wrap);
+          const original=f.onsubmit;
+          f.onsubmit=async function(e){
+            await original.call(this,e);
+            const timestamp=this.elements.transaction_timestamp?.value;
+            if(timestamp&&data?.id){try{await sb.from('money_held').update({created_at:localDTToISO(timestamp),updated_at:new Date().toISOString()}).eq('id',data.id).eq('user_id',user.id);await loadData();render();}catch(err){console.warn('Money Held timestamp update skipped:',err)}}
+          };
+          f.dataset.timestampPatched='1';
+        }
+      }
+    }
+    return r;
+  };
+
+  // Show both the transaction timestamp and the last modification timestamp.
+  const _txHTML=window.txHTML;
+  window.txHTML=function(t){
+    const html=_txHTML(t);
+    if(!html)return html;
+    const marker=t.updated_at?`Updated ${esc(fmtDateTime(t.updated_at))}`:'';
+    const stamp=`<div class="sub timestamp-meta">Recorded ${esc(fmtDateTime(t.created_at))}${marker?' · '+marker:''}</div>`;
+    // Keep the timestamp on its own line, immediately below Category when present,
+    // otherwise below the transaction details and before Notes.
+    if(/<div class="sub">Category: [\s\S]*?<\/div>/.test(html)){
+      return html.replace(/(<div class="sub">Category: [\s\S]*?<\/div>)/,`$1${stamp}`);
+    }
+    if(/<div class="sub">[\s\S]*?<\/div><\/div><div class="tx-right"/.test(html)){
+      return html.replace(/(<div class="sub">[\s\S]*?<\/div>)(<\/div><div class="tx-right")/,`$1${stamp}$2`);
+    }
+    return html.replace('</div><div class="tx-right"',`${stamp}</div><div class="tx-right"`);
+  };
+  const _heldHTML=window.heldHTML;
+  if(_heldHTML)window.heldHTML=function(h){
+    const html=_heldHTML(h);
+    const stamp=`<div class="sub timestamp-meta">Recorded ${esc(fmtDateTime(h.created_at))}${h.updated_at?' · Updated '+esc(fmtDateTime(h.updated_at)):''}</div>`;
+    return html.replace(/(<div class="sub">[\s\S]*?<\/div>)(<\/div><div style="text-align:right">)/,`$1${stamp}$2`);
+  };
+  const style=document.createElement('style');style.textContent=`
+    .timestamp-help{margin:-5px 0 10px;font-size:12px;opacity:.75}
+    .timestamp-meta{display:block!important;width:100%!important;box-sizing:border-box;font-size:11px!important;line-height:1.35;margin-top:4px;opacity:.72;white-space:normal}
+    input[type="datetime-local"]{width:100%;box-sizing:border-box}
+    @media(max-width:560px){.timestamp-help{font-size:11px}.timestamp-meta{font-size:10px!important}}
+  `;document.head.appendChild(style);
 })();
