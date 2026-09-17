@@ -764,10 +764,10 @@ renderPeople=renderPeoplePlus;
 
 function clearAllTransactionFilters(){mbFilter={type:'All',from:'',to:'',category:'',subcategory:'',account:'',person:'',description:'',kind:'all'};filter='All';renderTransactions();}
 function renderTransactionsPlus(){
-  const active=mbFilter.type||'All';
-  $('filters').innerHTML=['All','income','expense','transfer','split','reimbursement'].map(x=>`<button class="chip ${active===x?'active':''}" onclick="mbFilter.type='${x}';renderTransactions()">${x==='All'?'All':x[0].toUpperCase()+x.slice(1)}</button>`).join('')+`<button class="chip filter-button" onclick="openTransactionFilters()">⚙ Filters</button><button class="chip" onclick="clearAllTransactionFilters()">Clear filters</button>`;
+  const active=mbFilter.type||'All',kind=mbFilter.kind||'all';
+  $('filters').innerHTML=['All','income','expense','transfer','split','reimbursement'].map(x=>`<button class="chip ${kind==='all'&&active===x?'active':''}" onclick="mbFilter.type='${x}';mbFilter.kind='all';renderTransactions()">${x==='All'?'All':x[0].toUpperCase()+x.slice(1)}</button>`).join('')+`<button class="chip ${kind==='held'?'active':''}" onclick="mbFilter.kind='held';renderTransactions()">Held for others</button><button class="chip ${kind==='lendborrow'?'active':''}" onclick="mbFilter.kind='lendborrow';renderTransactions()">Lend / Borrow</button><button class="chip filter-button" onclick="openTransactionFilters()">⚙ Filters</button><button class="chip" onclick="clearAllTransactionFilters()">Clear filters</button>`;
   let arr=state.transactions.slice().sort((a,b)=>String(b.transaction_date).localeCompare(String(a.transaction_date)));
-  if(active!=='All')arr=arr.filter(t=>t.type===active);
+  if(kind==='all'&&active!=='All')arr=arr.filter(t=>t.type===active);
   if(mbFilter.from)arr=arr.filter(t=>String(t.transaction_date)>=mbFilter.from);
   if(mbFilter.to)arr=arr.filter(t=>String(t.transaction_date)<=mbFilter.to);
   if(mbFilter.category)arr=arr.filter(t=>txAllocations(t).some(x=>{const c=state.categories.find(c=>c.id===x.category_id);return x.category_id===mbFilter.category||rootCategory(c)?.id===mbFilter.category}));
