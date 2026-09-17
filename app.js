@@ -1350,7 +1350,7 @@ exportPDF=exportPDFPlus;
   }
   function stampField(data){
     const value=isoToLocalDT(data?.created_at);
-    return `<label>Transaction date & time</label><input name="transaction_timestamp" type="datetime-local" step="60" value="${value}" required><div class="sub timestamp-help">Defaults to the current time. You can change it to the actual time the transaction happened.</div>`;
+    return `<label>Recorded date & time</label><input name="transaction_timestamp" type="datetime-local" step="60" value="${value}" required><div class="sub timestamp-help">Defaults to the current time. You can change it to the actual time the transaction happened.</div>`;
   }
   function updatedLabel(iso){return iso?` · Updated ${esc(fmtDateTime(iso))}`:''}
   window.fmtDateTime=function(iso){
@@ -1449,4 +1449,95 @@ exportPDF=exportPDFPlus;
     input[type="datetime-local"]{width:100%;box-sizing:border-box}
     @media(max-width:560px){.timestamp-help{font-size:11px}.timestamp-meta{font-size:10px!important}}
   `;document.head.appendChild(style);
+})();
+
+/* ===== vNext+Plus final transaction chronology/account-balance patch ===== */
+(function(){
+  const recordedMs=t=>{const v=Date.parse(t?.created_at||'');return Number.isFinite(v)?v:0;};
+
+  function accountEffects(t){
+    const n=Number(t?.amount||0), out=[];
+    if(!Number.isFinite(n)||n===0)return out;
+    if(t.__special==='loan'){if(t.account_id)out.push([t.account_id,t.direction==='borrow'?n:-n]);}
+    else if(t.__special==='loan_repayment'){if(t.account_id)out.push([t.account_id,t.direction==='received'?n:-n]);}
+    else if(t.__special==='held'){if(t.account_id)out.push([t.account_id,n]);}
+    else if(t.type==='transfer'){if(t.account_id)out.push([t.account_id,-n]);if(t.to_account_id)out.push([t.to_account_id,n]);}
+    else {
+      const allocs=(state.transaction_accounts||[]).filter(x=>x.transaction_id===t.id&&x.account_id);
+      if(allocs.length && (t.type==='income'||t.type==='reimbursement'||t.type==='expense'||t.type==='split')){
+        const total=allocs.reduce((s,x)=>s+Number(x.amount||0),0)||n;
+        allocs.forEach(x=>{const share=Number(x.amount||0);const delta=(t.type==='income'||t.type==='reimbursement'?1:-1)*(total?share*n/total:0);out.push([x.account_id,delta]);});
+      } else if(t.account_id){
+        if(t.type==='income'||t.type==='reimbursement')out.push([t.account_id,n]);
+        else if(t.type==='expense'||t.type==='split')out.push([t.account_id,-n]);
+      }
+    }
+    return out;
+  }
+
+  function buildRows(){
+    const rows=state.transactions.map(t=>({...t,__special:null})), baseIds=new Set(rows.map(t=>t.id));
+    state.split_transactions.filter(st=>st.transaction_id&&!baseIds.has(st.transaction_id)).forEach(st=>rows.push({id:st.transaction_id,type:'split',amount:Number(st.total_amount||0),description:st.description||'Split transaction',transaction_date:st.transaction_date||localDate(st.created_at)||today(),account_id:st.account_id||null,created_at:st.created_at,updated_at:st.updated_at,__special:'split',__specialId:st.id}));
+    state.loans.forEach(l=>rows.push({id:`loan-${l.id}`,type:'loan',amount:Number(l.amount||0),description:l.direction==='lend'?`Lent to ${personName(l.person_id)}`:`Borrowed from ${personName(l.person_id)}`,transaction_date:l.loan_date||localDate(l.created_at)||today(),account_id:l.account_id||null,created_at:l.created_at,updated_at:l.updated_at,notes:l.notes||'',direction:l.direction,person_id:l.person_id,__special:'loan',__specialId:l.id}));
+    state.loan_repayments.forEach(r=>rows.push({id:`loan-repayment-${r.id}`,type:'loan_repayment',amount:Number(r.amount||0),description:r.direction==='received'?`Repayment received from ${personName(r.person_id)}`:`Repayment sent to ${personName(r.person_id)}`,transaction_date:r.repayment_date||localDate(r.created_at)||today(),account_id:r.account_id||null,created_at:r.created_at,updated_at:r.updated_at,notes:r.notes||'',direction:r.direction,person_id:r.person_id,__special:'loan_repayment',__specialId:r.id}));
+    state.money_held.forEach(h=>rows.push({id:`held-${h.id}`,type:'money_held',amount:Number(h.amount||0),description:`Money held for ${personName(h.person_id)}`,transaction_date:h.received_date||localDate(h.created_at)||today(),account_id:h.account_id||null,created_at:h.created_at,updated_at:h.updated_at,notes:h.purpose||h.notes||'',status:h.status,person_id:h.person_id,__special:'held',__specialId:h.id}));
+    return rows.sort((a,b)=>recordedMs(b)-recordedMs(a)||String(b.id).localeCompare(String(a.id)));
+  }
+
+  function balances(rows){
+    const running=new Map(state.accounts.map(a=>[a.id,Number(a.opening_balance||0)])), result=new Map();
+    rows.slice().sort((a,b)=>recordedMs(a)-recordedMs(b)||String(a.id).localeCompare(String(b.id))).forEach(t=>{
+      accountEffects(t).forEach(([id,delta])=>{
+        const next=(running.get(id)||0)+delta;running.set(id,next);
+        if(!result.has(t.id))result.set(t.id,new Map());result.get(t.id).set(id,next);
+      });
+    });
+    return result;
+  }
+
+  function balanceHTML(t){
+    const m=window.__mbTxBalanceMap?.get(t.id)||new Map(), ids=[];
+    if(t.account_id)ids.push(t.account_id);if(t.type==='transfer'&&t.to_account_id)ids.push(t.to_account_id);
+    const parts=[...new Set(ids)].map(id=>m.has(id)?`${esc(accountName(id))}: ${money(m.get(id))}`:'').filter(Boolean);
+    return parts.length?`<div class="sub tx-account-balance"><b>Balance</b>: ${parts.join(' · ')}</div>`:'';
+  }
+
+  function actions(t){
+    if(!t.__special)return `<button class="smallbtn" onclick="editTx('${t.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteTx('${t.id}')">Delete</button>`;
+    if(t.__special==='held')return `<button class="smallbtn" onclick="editMoneyHeld('${t.__specialId}')">Edit</button><button class="smallbtn" onclick="toggleMoneyHeld('${t.__specialId}')">${t.status==='settled'?'Undo':'Settle'}</button><button class="smallbtn dangerbtn" onclick="deleteMoneyHeld('${t.__specialId}')">Delete</button>`;
+    if(t.__special==='loan')return `<button class="smallbtn" onclick="editLoan('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteLoan('${t.__specialId}')">Delete</button>`;
+    if(t.__special==='loan_repayment')return `<button class="smallbtn" onclick="editLoanRepayment('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteLoanRepayment('${t.__specialId}')">Delete</button>`;
+    return t.__special==='split'&&t.__specialId?`<button class="smallbtn" onclick="editSplitSpecial('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteSplitSpecial('${t.__specialId}')">Delete</button>`:'';
+  }
+
+  window.txHTML=function(t){
+    const stamp=`<div class="sub timestamp-meta">Recorded: ${esc(fmtDateTime(t.created_at))}${t.updated_at?`<br>Updated: ${esc(fmtDateTime(t.updated_at))}`:''}</div>`;
+    if(t.__special){
+      const meta=t.__special==='held'?`${t.status==='settled'?'Settled':'Pending'} · Money Held`:t.__special==='loan'?(t.direction==='lend'?'Lend':'Borrow'):t.__special==='loan_repayment'?(t.direction==='received'?'Loan repayment received':'Loan repayment sent'):'Split';
+      const icon=t.__special==='held'?'💰':t.__special==='loan'?'↔':t.__special==='loan_repayment'?'↩':'🔀', cls=t.__special==='held'?'amber':t.__special==='loan'?'transfer':t.__special==='loan_repayment'?'income':'split';
+      return `<div class="row transaction-row"><div class="left"><div class="bubble ${cls}">${icon}</div><div class="tx-content"><div class="name">${esc(t.description)}</div><div class="sub">${t.account_id?esc(accountName(t.account_id)):''} · ${esc(meta)}</div>${stamp}${balanceHTML(t)}${t.notes?`<div class="sub">${esc(t.notes)}</div>`:''}</div></div><div class="tx-right" style="text-align:right"><b>${money(t.amount)}</b><div class="action-row">${actions(t)}</div></div></div>`;
+    }
+    const icon={income:'↑',expense:'−',transfer:'⇄',split:'🔀',reimbursement:'↩'}[t.type]||'•', sign=t.type==='income'||t.type==='reimbursement'?'+':t.type==='expense'||t.type==='split'?'−':'', other=t.type==='transfer'&&t.to_account_id?` → ${esc(accountName(t.to_account_id))}`:'', share=t.type==='split'?` · ${esc(getNickname())} share ${money(splitMyShare(t))}`:'', cats=txAllocations(t).map(a=>catName(a.category_id)).filter(Boolean);
+    return `<div class="row transaction-row"><div class="left"><div class="bubble ${t.type==='income'||t.type==='reimbursement'?'income':t.type}">${icon}</div><div class="tx-content"><div class="name">${esc(t.description||'(No description)')}</div><div class="sub">${esc(accountAllocationSummary(t))}${other}${share}</div>${cats.length?`<div class="sub">Category: ${esc(cats.join(', '))}</div>`:''}${stamp}${balanceHTML(t)}${t.notes?`<div class="sub">${esc(t.notes)}</div>`:''}</div></div><div class="tx-right" style="text-align:right"><b class="${sign==='+'?'green':sign==='−'?'red':''}">${sign}${money(t.amount)}</b><div class="action-row">${actions(t)}</div></div></div>`;
+  };
+
+  renderTransactions=function(){
+    const active=mbFilter.type||'All',kind=mbFilter.kind||'all';
+    $('filters').innerHTML=['All','income','expense','transfer','split','reimbursement'].map(x=>`<button class="chip ${kind==='all'&&active===x?'active':''}" onclick="mbFilter.type='${x}';mbFilter.kind='all';renderTransactions()">${x==='All'?'All':x[0].toUpperCase()+x.slice(1)}</button>`).join('')+`<button class="chip ${kind==='held'?'active':''}" onclick="mbFilter.kind='held';renderTransactions()">Held for others</button><button class="chip ${kind==='lendborrow'?'active':''}" onclick="mbFilter.kind='lendborrow';renderTransactions()">Lend / Borrow</button><button class="chip filter-button" onclick="openTransactionFilters()">⚙ Filters</button><button class="chip" onclick="clearAllTransactionFilters()">Clear filters</button>`;
+    let arr=buildRows();
+    if(kind==='all'&&active!=='All')arr=arr.filter(t=>t.type===active);
+    if(mbFilter.from)arr=arr.filter(t=>String(t.transaction_date)>=mbFilter.from);
+    if(mbFilter.to)arr=arr.filter(t=>String(t.transaction_date)<=mbFilter.to);
+    if(mbFilter.category)arr=arr.filter(t=>txAllocations(t).some(x=>{const c=state.categories.find(c=>c.id===x.category_id);return x.category_id===mbFilter.category||rootCategory(c)?.id===mbFilter.category}));
+    if(mbFilter.subcategory)arr=arr.filter(t=>txAllocations(t).some(x=>x.category_id===mbFilter.subcategory));
+    if(mbFilter.account)arr=arr.filter(t=>t.account_id===mbFilter.account||t.to_account_id===mbFilter.account||(state.transaction_accounts||[]).some(x=>x.transaction_id===t.id&&x.account_id===mbFilter.account));
+    if(mbFilter.person)arr=arr.filter(t=>t.person_id===mbFilter.person||state.split_participants.some(x=>x.person_id===mbFilter.person&&state.split_transactions.some(st=>st.id===x.split_transaction_id&&st.transaction_id===t.id)));
+    if(mbFilter.description)arr=arr.filter(t=>String(t.description||t.notes||'').toLowerCase().includes(mbFilter.description.toLowerCase()));
+    if(kind==='held'){arr=arr.filter(t=>t.__special==='held');}
+    if(kind==='lendborrow'){arr=arr.filter(t=>t.__special==='loan'||t.__special==='loan_repayment');}
+    window.__mbTxBalanceMap=balances(arr.length?buildRows():[]);
+    $('txList').innerHTML=arr.map(txHTML).join('')||'<div class="empty">No transactions found.</div>';
+  };
+
+  const style=document.createElement('style');style.textContent=`.tx-account-balance{font-size:12px!important;opacity:.86}.timestamp-meta{display:block!important;line-height:1.4!important;margin-top:4px}.timestamp-meta br{display:block}@media(max-width:560px){.tx-account-balance,.timestamp-meta{font-size:11px!important}}`;document.head.appendChild(style);
 })();

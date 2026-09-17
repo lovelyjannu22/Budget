@@ -333,6 +333,19 @@ begin
  end if;
 end $$;
 
+-- Keep updated_at working for loans and loan repayments as well.
+do $$
+begin
+ if not exists(select 1 from pg_trigger where tgname='loans_updated_at') then
+   create trigger loans_updated_at before update on public.loans
+   for each row execute function public.set_updated_at();
+ end if;
+ if not exists(select 1 from pg_trigger where tgname='loan_repayments_updated_at') then
+   create trigger loan_repayments_updated_at before update on public.loan_repayments
+   for each row execute function public.set_updated_at();
+ end if;
+end $$;
+
 -- RLS + browser grants.
 alter table public.transaction_categories enable row level security;
 alter table public.money_held enable row level security;

@@ -35,3 +35,11 @@
 - Calendar Reminders remain amber and Transactions remain purple.
 - Transaction rows now use a mobile-safe layout with constrained content, wrapped text, and wrapped action buttons to prevent horizontal page movement on phones.
 - The mobile transaction fix applies to Home, Transactions, Split, and Calendar transaction logs because they share the transaction renderer.
+
+
+## Transaction chronology and account balance
+- Transactions now sort by recorded timestamp (`created_at`) rather than transaction date.
+- Transaction list shows one Recorded date/time plus the Updated timestamp.
+- Added account-specific running balance after each recorded transaction.
+- Account filtering now includes transfers where the selected account is the destination (`to_account_id`).
+- Added updated_at triggers for loans and loan repayments.
