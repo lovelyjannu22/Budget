@@ -515,7 +515,7 @@ function openMoneyHeld(data=null){openModal('moneyHeld',data)}
 async function toggleMoneyHeld(id){const h=state.money_held.find(x=>x.id===id);if(!h)return;if(h.status==='pending'){openModalRaw(`<h2>Settle money held</h2><p class="sub">The amount will be deducted from <b>${esc(accountName(h.account_id))}</b>. The settlement date defaults to today and can be edited.</p><form id="f"><label>Held in account</label><input value="${esc(accountName(h.account_id))}" disabled><label>Settled date</label><input name="settled_date" type="date" value="${today()}" required><button class="primary">Mark as settled</button></form>`);$('f').onsubmit=async e=>{e.preventDefault();try{const x=Object.fromEntries(new FormData(e.target));await update('money_held',id,{status:'settled',settled_date:String(x.settled_date).slice(0,10)});closeModal();await loadData();render()}catch(err){alert(friendlyError(err))}}}else{try{await update('money_held',id,{status:'pending',settled_date:null});await loadData();render()}catch(e){alert(friendlyError(e))}}}
 async function editMoneyHeld(id){openModal('moneyHeld',state.money_held.find(x=>x.id===id))}
 async function deleteMoneyHeld(id){if(confirm('Delete this Money Held record?')){await del('money_held',id);removeLocal('money_held',id);render()}}
-function splitListHTML(){$('splitList').innerHTML=state.transactions.filter(t=>t.type==='split').sort((a,b)=>String(b.transaction_date).localeCompare(String(a.transaction_date))).map(txHTML).join('')||'<div class="empty">No split transactions yet.</div>'}
+function splitListHTML(){$('splitList').innerHTML=state.transactions.filter(t=>t.type==='split').sort((a,b)=>String(b.created_at||b.transaction_date||'').localeCompare(String(a.created_at||a.transaction_date||''))).map(txHTML).join('')||'<div class="empty">No split transactions yet.</div>'}
 function renderMoneyHeldAndSplit(){if($('moneyHeldList'))renderMoneyHeld();if($('splitList'))splitListHTML()}
 
 
@@ -1034,7 +1034,7 @@ exportPDF=exportPDFPlus;
     const rs=state.reminders.filter(r=>!r.completed).sort((a,b)=>String(a.due_date).localeCompare(String(b.due_date)));$('homeReminders').innerHTML=rs.length?rs.map(reminderHTML).join(''):'<div class="empty">No pending reminders.</div>';
     const splitPending=state.split_participants.reduce((sum,r)=>sum+Math.max(0,Number(r.amount||0)-Number(r.amount_paid||0)),0),held=moneyHeldOutstanding(),lend=peopleBalances().reduce((s,p)=>s+Number(p.loanOwed||0),0),borrow=peopleBalances().reduce((s,p)=>s+Number(p.loanIowe||0),0);
     const el=$('homePeopleStats');if(el)el.innerHTML=`<div class="split"><span>Split pending</span><b>${money(splitPending)}</b></div><div class="held"><span>Money held</span><b>${money(held)}</b></div><div class="lend"><span>They owe you</span><b>${money(lend)}</b></div><div class="owe"><span>You owe</span><b>${money(borrow)}</b></div><div class="receivable"><span>To receive</span><b>${money(splitPending+lend)}</b></div><div class="payable"><span>To pay</span><b>${money(borrow)}</b></div>`;
-    const tx=state.transactions.slice().sort((a,b)=>String(b.transaction_date).localeCompare(String(a.transaction_date))).slice(0,5);$('homeRecent').innerHTML=tx.length?tx.map(txHTML).join(''):'<div class="empty">No transactions yet.</div>';
+    const tx=state.transactions.slice().sort((a,b)=>String(b.created_at||b.transaction_date||'').localeCompare(String(a.created_at||a.transaction_date||''))).slice(0,5);$('homeRecent').innerHTML=tx.length?tx.map(txHTML).join(''):'<div class="empty">No transactions yet.</div>';
   };
 
   // Remove accidental persistent busy state if an older build left it behind.
@@ -1350,7 +1350,7 @@ exportPDF=exportPDFPlus;
   }
   function stampField(data){
     const value=isoToLocalDT(data?.created_at);
-    return `<label>Recorded date & time</label><input name="transaction_timestamp" type="datetime-local" step="60" value="${value}" required><div class="sub timestamp-help">Defaults to the current time. You can change it to the actual time the transaction happened.</div>`;
+    return `<label>Recorded date & time</label><input name="transaction_timestamp" type="datetime-local" step="60" value="${value}" required>`;
   }
   function updatedLabel(iso){return iso?` · Updated ${esc(fmtDateTime(iso))}`:''}
   window.fmtDateTime=function(iso){
@@ -1373,6 +1373,17 @@ exportPDF=exportPDFPlus;
     wrap.innerHTML=stampField(data);
     anchor.closest('label')?.after(wrap);
     if(!anchor.closest('label'))anchor.after(wrap);
+    // The separate "Date" field duplicates "Recorded date & time" on transaction forms, so hide the
+    // Date label+input and keep the hidden field in sync with the recorded timestamp instead.
+    if(anchor.name==='transaction_date'){
+      anchor.style.display='none';
+      const dateLabel=anchor.previousElementSibling;
+      if(dateLabel&&dateLabel.tagName==='LABEL')dateLabel.style.display='none';
+      const stampInput=wrap.querySelector('[name="transaction_timestamp"]');
+      const syncDate=()=>{ if(stampInput.value) anchor.value=stampInput.value.slice(0,10); };
+      stampInput?.addEventListener('input',syncDate);
+      stampInput?.addEventListener('change',syncDate);
+    }
     f.dataset.timestampPatched='1';
     return result;
   };
