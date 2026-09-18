@@ -81,3 +81,5 @@ For this build, run the included `my_budget_vnext_plus.sql` completely in the se
 - To receive and To pay are kept on one row on desktop.
 - Budget Spent/Budget/Remaining amounts are highlighted consistently.
 - Saving/Updating/Deleting busy overlay has been removed completely.
+
+Budget now groups by parent category and supports independent parent/subcategory ordering; People and other card arrows immediately re-render in the selected order.

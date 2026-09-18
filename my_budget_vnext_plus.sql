@@ -570,3 +570,14 @@ begin
 end $$;
 revoke all on function public.record_recurring_occurrence(uuid,uuid) from public;
 grant execute on function public.record_recurring_occurrence(uuid,uuid) to authenticated;
+
+
+-- Shared expense payer/settlement support (additive)
+alter table public.split_transactions add column if not exists paid_by_person_id uuid references public.people(id) on delete restrict;
+alter table public.reimbursements add column if not exists direction text not null default 'received';
+do $$ begin
+  if not exists(select 1 from pg_constraint where conrelid='public.reimbursements'::regclass and conname='reimbursements_direction_check') then
+    alter table public.reimbursements add constraint reimbursements_direction_check check(direction in('received','sent'));
+  end if;
+end $$;
+notify pgrst,'reload schema';

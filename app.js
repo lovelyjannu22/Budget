@@ -43,6 +43,13 @@ function openModalRaw(h){$('modalBody').innerHTML=h;$('modal').classList.add('sh
 function showPage(p){document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));$(p).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.p===p));if(dataReady)render()}
 const tables=['accounts','categories','transactions','transaction_categories','budgets','people','goals','split_transactions','split_participants','reimbursements','goal_contributions','recurring_transactions','recurring_occurrences','reminders','loans','loan_repayments','money_held'];
 async function loadData(){const results=await Promise.all(tables.map(async t=>{const {data,error}=await sb.from(t).select('*');if(error)throw new Error(t+': '+error.message);return [t,data||[]]}));for(const [t,data] of results)state[t]=data;rebuildIndexes();}
+const MB_CRITICAL_TABLES=['accounts','categories','people','transactions','transaction_categories','transaction_accounts','goals','goal_contributions','split_transactions','split_participants','reimbursements','loans','loan_repayments','money_held'];
+const MB_DEFERRED_TABLES=['budgets','recurring_transactions','recurring_occurrences','reminders'];
+async function mbLoadTables(list){const results=await Promise.all([...new Set(list)].map(async t=>{const {data,error}=await sb.from(t).select('*');if(error)throw new Error(t+': '+error.message);return [t,data||[]]}));for(const [t,data] of results)state[t]=data;rebuildIndexes();}
+async function mbLoadForMutation(list){return mbLoadTables(list)}
+function mbMutationTables(type){return ({account:['accounts'],category:['categories'],budget:['budgets'],goal:['goals','goal_contributions'],loan:['loans','loan_repayments'],loanRepayment:['loan_repayments','loans'],loanRepaymentEdit:['loan_repayments','loans'],person:['people','split_participants','reimbursements','loans','loan_repayments','money_held'],income:['transactions','transaction_categories','transaction_accounts','recurring_transactions'],expense:['transactions','transaction_categories','transaction_accounts','recurring_transactions'],transfer:['transactions','transaction_accounts','goal_contributions','recurring_transactions'],split:['transactions','transaction_categories','transaction_accounts','split_transactions','split_participants'],repayment:['transactions','reimbursements'],repaymentEdit:['transactions','reimbursements'],reminder:['reminders'],recurring:['recurring_transactions','recurring_occurrences'],moneyHeld:['money_held']})[type]||tables}
+window.mbLoadTables=mbLoadTables;window.mbLoadForMutation=mbLoadForMutation;window.mbMutationTables=mbMutationTables;
+async function mbInitialLoad(){await mbLoadTables(MB_CRITICAL_TABLES);if(!state.categories.length){await ensureBase();await mbLoadTables(['categories']);}dataReady=true;showLoading(false);render();setTimeout(async()=>{try{await mbLoadTables(MB_DEFERRED_TABLES);render();try{const generated=await processRecurring(false);if(generated){await mbLoadTables(['recurring_transactions','recurring_occurrences']);render()}}catch(e){console.warn('Recurring maintenance deferred:',e)}}catch(e){console.warn('Deferred data load failed:',e)}},0)}
 function removeLocal(t,id){if(Array.isArray(state[t]))state[t]=state[t].filter(x=>x.id!==id)}
 async function insert(t,row){const {data,error}=await sb.from(t).insert({...row,user_id:user.id}).select().single();if(error)throw error;return data}
 async function update(t,id,row){const {data,error}=await sb.from(t).update(row).eq('id',id).select('*');if(error)throw error;if(!data||!data.length)throw new Error(`Could not update ${t}. The record may no longer exist or you may not have permission.`);return data[0]}
@@ -80,22 +87,7 @@ async function boot(){
       // One parallel read gets the real cloud state first. Base categories are
       // created only when the cloud is genuinely empty, avoiding an unnecessary
       // extra query on every refresh.
-      await loadData();
-      if(!state.categories.length){
-        await ensureBase();
-        await loadData();
-      }
-      dataReady=true;
-      showLoading(false);
-      render();
-
-      // Recurring generation is maintenance work; do it after the real data is
-      // already on screen so reopening is not blocked by it. If it creates due
-      // occurrences, refresh the in-memory state afterwards.
-      try{
-        const generated=await processRecurring(false);
-        if(generated){await loadData();render();}
-      }catch(recErr){console.warn('Recurring maintenance deferred:',recErr)}
+      await mbInitialLoad();
     }catch(dataError){
       console.error('Initial data load failed:',dataError);
       // IMPORTANT: do not mark data ready and do not render empty arrays. Keep the
@@ -126,7 +118,7 @@ $('authForm').onsubmit=async e=>{
         user=r.data.user;
         dataReady=false;
         setAuthGate(true);showLoading(true,'Loading your budget…');
-        try{await loadData();if(!state.categories.length){await ensureBase();await loadData()}dataReady=true;showLoading(false);render();try{const generated=await processRecurring(false);if(generated){await loadData();render()}}catch(recErr){console.warn('Recurring maintenance deferred:',recErr)}}catch(err){console.error('Initial data load failed:',err);showLoading(true,'Could not load your budget data. Retrying…');setTimeout(()=>{if(user&&sb&&!dataReady)boot()},1200)}
+        try{await mbInitialLoad()}catch(err){console.error('Initial data load failed:',err);showLoading(true,'Could not load your budget data. Retrying…');setTimeout(()=>{if(user&&sb&&!dataReady)boot()},1200)}
       }else notice('Account created. Check your email if confirmation is enabled, then sign in.','success')
     }else{
       const r=await sb.auth.signInWithPassword({email,password});
@@ -137,7 +129,7 @@ $('authForm').onsubmit=async e=>{
       // state before Supabase data arrives. The authenticated shell can be shown
       // while the real cloud data loads, avoiding misleading zero/empty values.
       setAuthGate(true);showLoading(true,'Loading your budget…');
-      try{await loadData();if(!state.categories.length){await ensureBase();await loadData()}dataReady=true;showLoading(false);render();try{const generated=await processRecurring(false);if(generated){await loadData();render()}}catch(recErr){console.warn('Recurring maintenance deferred:',recErr)}}catch(err){console.error('Initial data load failed:',err);showLoading(true,'Could not load your budget data. Retrying…');setTimeout(()=>{if(user&&sb&&!dataReady)boot()},1200)}
+      try{await mbInitialLoad()}catch(err){console.error('Initial data load failed:',err);showLoading(true,'Could not load your budget data. Retrying…');setTimeout(()=>{if(user&&sb&&!dataReady)boot()},1200)}
     }
   }catch(e){notice(e?.message||'Authentication failed.','error')}
   finally{$('authSubmit').disabled=false}
@@ -164,8 +156,18 @@ function budgetHTML(b){const s=budgetStatus(b),rem=Math.max(0,Number(b.amount)-s
 function renderHome(){const now=todayDate(),b=state.budgets.find(x=>x.period==='monthly'&&(!x.year||x.year===now.getFullYear())&&(!x.month||x.month===now.getMonth()+1));$('homeBudget').innerHTML=b?budgetHTML(b):'<div class="empty">No monthly budget yet.</div>';const gs=state.goals.slice().sort((a,b)=>Number(b.is_completed)-Number(a.is_completed)).slice(0,1);$('homeGoals').innerHTML=gs.length?gs.map(goalHTML).join(''):'<div class="empty">No goals yet.</div>';const ps=peopleBalances().filter(x=>x.balance>0).slice(0,3);$('homePeople').innerHTML=ps.length?ps.map(personHTML).join(''):'<div class="empty">Nobody owes you right now.</div>';const rs=state.reminders.slice().sort((a,b)=>Number(Boolean(a.completed))-Number(Boolean(b.completed))||String(a.due_date).slice(0,10).localeCompare(String(b.due_date).slice(0,10)));$('homeReminders').innerHTML=rs.length?rs.map(reminderHTML).join(''):'<div class="empty">No reminders.</div>';const tx=state.transactions.slice().sort((a,b)=>String(b.transaction_date).slice(0,10).localeCompare(String(a.transaction_date).slice(0,10))||String(b.created_at||'').localeCompare(String(a.created_at||''))).slice(0,5);$('homeRecent').innerHTML=tx.length?tx.map(txHTML).join(''):'<div class="empty">No transactions yet.</div>'}
 
 function renderTransactions(){const types=['All','income','expense','transfer','split','reimbursement'];$('filters').innerHTML=types.map(x=>`<button class="chip ${filter===x?'active':''}" onclick="filter='${x}';renderTransactions()">${x==='All'?'All':x[0].toUpperCase()+x.slice(1)}</button>`).join('');let arr=state.transactions.slice().sort((a,b)=>String(b.transaction_date).localeCompare(String(a.transaction_date))||String(b.created_at||'').localeCompare(String(a.created_at||'')));if(filter!=='All')arr=arr.filter(t=>t.type===filter);$('txList').innerHTML=arr.length?arr.map(txHTML).join(''):'<div class="empty">No transactions found.</div>'}
-function renderAccounts(){const list=state.accounts.map(a=>{const inc=state.transactions.filter(t=>t.account_id===a.id&&t.type==='income').reduce((s,t)=>s+Number(t.amount||0),0);const spent=state.transactions.filter(t=>t.account_id===a.id&&(t.type==='expense'||t.type==='split')).reduce((s,t)=>s+Number(t.amount||0),0);const bal=accountBalance(a);return `<div class="row"><div class="left"><div class="bubble">🏦</div><div><div class="name">${esc(a.name)}</div><div class="sub">${esc(a.type)} · ${esc(a.currency||'INR')}</div><div class="sub">Income ${money(inc)} · Spent ${money(spent)}</div></div></div><div style="text-align:right"><b>${money(bal)}</b><div style="margin-top:5px"><button class="smallbtn" onclick="editAccount('${a.id}')">✎</button> <button class="smallbtn" onclick="deleteAccount('${a.id}')">🗑</button></div></div></div>`}).join('');$('accountList').innerHTML=list||'<div class="empty">Add your first account.</div>'}
-function renderBudgets(){$('budgetTabs').innerHTML=['weekly','monthly','yearly'].map(p=>`<button class="${budgetPeriod===p?'active':''}" onclick="budgetPeriod='${p}';renderBudgets()">${p[0].toUpperCase()+p.slice(1)}</button>`).join('');const now=todayDate(),cy=now.getFullYear(),cm=now.getMonth()+1;const arr=state.budgets.filter(b=>b.period===budgetPeriod&&(!b.year||b.year===cy)&&(budgetPeriod!=='monthly'||!b.month||b.month===cm));$('budgetList').innerHTML=arr.length?arr.map(budgetHTML).join(''):'<div class="empty">No ${budgetPeriod} budgets yet.</div>'}
+
+function mbOrderKey(k){return `mybudget_card_order_v3_${user?.id||'local'}_${k}`}
+function mbLoadOrder(k){try{return JSON.parse(localStorage.getItem(mbOrderKey(k))||'[]')}catch(e){return[]}}
+function mbSaveOrder(k,ids){try{localStorage.setItem(mbOrderKey(k),JSON.stringify(ids))}catch(e){}}
+function mbOrdered(items,k){const o=mbLoadOrder(k),rank=new Map(o.map((id,i)=>[String(id),i]));return items.slice().sort((a,b)=>{const ai=rank.has(String(a.id))?rank.get(String(a.id)):999999,bi=rank.has(String(b.id))?rank.get(String(b.id)):999999;return ai-bi})}
+window.mbMoveCard=function(k,id,d,selector,renderFn){const root=document.querySelector(selector);if(!root)return;const a=[...root.querySelectorAll(':scope > .mb-user-sort-card')],i=a.findIndex(x=>String(x.dataset.sortId)===String(id)),j=i+d;if(i<0||j<0||j>=a.length)return;if(d<0)root.insertBefore(a[i],a[j]);else root.insertBefore(a[j],a[i]);mbSaveOrder(k,a.map(x=>x.dataset.sortId));renderFn()}
+window.mbBindCardDrag=function(k,selector,renderFn){document.querySelectorAll(`${selector} > .mb-user-sort-card`).forEach(el=>{if(el.dataset.mbDragBound)return;el.dataset.mbDragBound='1';let timer=null,dragging=false;el.addEventListener('pointerdown',e=>{if(e.target.closest('button,input,select,textarea,a'))return;timer=setTimeout(()=>{dragging=true;el.classList.add('mb-dragging');try{el.setPointerCapture(e.pointerId)}catch(_){}},450)});el.addEventListener('pointermove',e=>{if(!dragging)return;e.preventDefault();const root=el.parentElement,others=[...root.querySelectorAll(':scope > .mb-user-sort-card')].filter(x=>x!==el),before=others.find(x=>e.clientY<x.getBoundingClientRect().top+x.getBoundingClientRect().height/2);before?root.insertBefore(el,before):root.appendChild(el)});const end=e=>{if(timer)clearTimeout(timer);if(!dragging)return;dragging=false;el.classList.remove('mb-dragging');try{el.releasePointerCapture(e.pointerId)}catch(_){}mbSaveOrder(k,[...el.parentElement.querySelectorAll(':scope > .mb-user-sort-card')].map(x=>x.dataset.sortId));renderFn()};el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end)})}
+function renderAccounts(){const items=mbOrdered(state.accounts,'accounts');const list=items.map((a,i)=>{const inc=state.transactions.filter(t=>t.account_id===a.id&&t.type==='income').reduce((s,t)=>s+Number(t.amount||0),0);const spent=state.transactions.filter(t=>t.account_id===a.id&&(t.type==='expense'||t.type==='split')).reduce((s,t)=>s+Number(t.amount||0),0);const bal=accountBalance(a);return `<div class="row mb-user-sort-card" data-sort-id="${esc(a.id)}"><div class="left"><span class="mb-drag-handle" title="Long press and drag">☷</span><div class="bubble">🏦</div><div><div class="name">${esc(a.name)}</div><div class="sub">${esc(a.type)} · ${esc(a.currency||'INR')}</div><div class="sub">Income ${money(inc)} · Spent ${money(spent)}</div></div></div><div style="text-align:right"><b>${money(bal)}</b><div style="margin-top:5px"><button class="smallbtn" onclick="editAccount('${a.id}')">✎</button> <button class="smallbtn" onclick="deleteAccount('${a.id}')">🗑</button><span class="mb-sort-nav"><button type="button" class="smallbtn" onclick="mbMoveCard('accounts','${a.id}',-1,'#accountList',renderAccounts)">↑</button><button type="button" class="smallbtn" onclick="mbMoveCard('accounts','${a.id}',1,'#accountList',renderAccounts)">↓</button></span></div></div></div>`}).join('');$('accountList').innerHTML=list||'<div class="empty">Add your first account.</div>';mbBindCardDrag('accounts','#accountList',renderAccounts)}
+function budgetSortLoad(key){try{const k=`mybudget_budget_sort_v2_${user?.id||'local'}`;return JSON.parse(localStorage.getItem(k)||'{}')[key]||[]}catch(e){return []}}
+function budgetSortSave(key,ids){try{const k=`mybudget_budget_sort_v2_${user?.id||'local'}`;const o=JSON.parse(localStorage.getItem(k)||'{}');o[key]=ids;localStorage.setItem(k,JSON.stringify(o))}catch(e){}}
+function sortBudgetItems(items,key){const o=budgetSortLoad(key),r=new Map(o.map((id,i)=>[id,i]));return items.slice().sort((a,b)=>(r.has(a.id)?r.get(a.id):999999)-(r.has(b.id)?r.get(b.id):999999))}
+function renderBudgets(){$('budgetTabs').innerHTML=['weekly','monthly','yearly'].map(p=>`<button class="${budgetPeriod===p?'active':''}" onclick="budgetPeriod='${p}';renderBudgets()">${p[0].toUpperCase()+p.slice(1)}</button>`).join('');const now=todayDate(),cy=now.getFullYear(),cm=now.getMonth()+1;const arr=state.budgets.filter(b=>b.period===budgetPeriod&&(!b.year||b.year===cy)&&(budgetPeriod!=='monthly'||!b.month||b.month===cm));if(!arr.length){$('budgetList').innerHTML=`<div class="empty">No ${budgetPeriod} budgets yet.</div>`;return}const groups=new Map();arr.forEach(b=>{const c=b.category_id?state.categories.find(x=>x.id===b.category_id):null,root=c?rootCategory(c):null,id=root?.id||'__uncategorized__';if(!groups.has(id))groups.set(id,{root,items:[]});groups.get(id).items.push(b)});const po=budgetSortLoad('parents'),pr=new Map(po.map((id,i)=>[id,i]));const gs=[...groups.values()].sort((a,b)=>{const ai=a.root?.id||'__uncategorized__',bi=b.root?.id||'__uncategorized__';return (pr.has(ai)?pr.get(ai):999999)-(pr.has(bi)?pr.get(bi):999999)||(a.root?.name||'').localeCompare(b.root?.name||'')});$('budgetList').innerHTML=gs.map(g=>{const pid=g.root?.id||'__uncategorized__',name=g.root?`${esc(g.root.icon||'🏷️')} ${esc(g.root.name)}`:'Uncategorized',items=sortBudgetItems(g.items,'parent_'+pid);return `<div class="budget-parent-group mb-budget-parent" data-sort-id="${esc(pid)}"><div class="budget-parent-heading"><div><span class="mb-drag-handle">☷</span><b>${name}</b><span class="badge">${items.length}</span></div><span class="mb-sort-nav"><button type="button" class="smallbtn" onclick="mbMoveBudgetParent('${esc(pid)}',-1)">↑</button><button type="button" class="smallbtn" onclick="mbMoveBudgetParent('${esc(pid)}',1)">↓</button></span></div><div class="budget-sub-list">${items.map(b=>`<div class="mb-budget-sub" data-sort-id="${esc(b.id)}">${budgetHTML(b)}<div class="budget-sub-sort"><span class="mb-drag-handle">☷</span><button type="button" class="smallbtn" onclick="mbMoveBudgetSub('${esc(pid)}','${esc(b.id)}',-1)">↑</button><button type="button" class="smallbtn" onclick="mbMoveBudgetSub('${esc(pid)}','${esc(b.id)}',1)">↓</button></div></div>`).join('')}</div></div>`}).join('')}
 function goalMonthlyNeed(g){const target=Number(g.target_amount||0),saved=Number(g.saved_amount||0),remain=Math.max(0,target-saved),months=Math.max(0,Number(g.duration_months||0));return months?remain/months:0}
 function goalETA(g){const saved=Number(g.saved_amount||0),target=Number(g.target_amount||0),remain=Math.max(0,target-saved);if(remain<=0)return 'Completed';const months=[];for(let i=0;i<6;i++){const d=todayDate();d.setMonth(d.getMonth()-i);const p=localDate(d).slice(0,7);const end=localDate(new Date(d.getFullYear(),d.getMonth()+1,0));months.push(Math.max(0,sumType('income',p)-personalSpendingBetween(p+'-01',end)))}const avg=months.reduce((a,b)=>a+b,0)/(months.length||1);if(avg<=0)return 'Need a positive savings rate';const n=Math.ceil(remain/avg);return `At avg savings ${money(avg)}/mo · about ${n} month${n===1?'':'s'}`}
 function goalHTML(g){const target=Number(g.target_amount||0),saved=Number(g.saved_amount||0),pct=Math.min(100,target?saved/target*100:0),months=Math.max(1,Number(g.duration_months||remainingMonthsThisYear())),need=target>saved?Math.max(0,target-saved)/months:0;return `<div class="row"><div class="left"><div class="bubble goal">${esc(g.icon||'🎯')}</div><div style="min-width:0;flex:1"><div class="name">${esc(g.name)}</div><div class="sub">${money(saved)} of ${money(target)} · ${goalETA(g)}</div><div class="goal-plan"><span>Plan: </span><input class="goal-month-input" id="goalMonths_${g.id}" type="number" min="1" step="1" value="${months}" aria-label="Months to reach ${esc(g.name)}"><button type="button" class="smallbtn goal-save-months" onclick="saveGoalDuration('${g.id}')">Save</button><span> · save <b>${money(need)}</b>/month</span></div><div class="progress"><div class="bar ${pct>=100?'full':pct>=50?'mid':'low'}" style="width:${pct}%"></div></div></div></div><div><button class="smallbtn" onclick="contribute('${g.id}')">＋ Add</button><br><button class="smallbtn" onclick="showGoalContrib('${g.id}')">History</button> <button class="smallbtn" onclick="editGoal('${g.id}')">✎</button> <button class="smallbtn" onclick="deleteGoal('${g.id}')">🗑</button></div></div>`}
@@ -184,7 +186,7 @@ function showLoanHistory(id){
  rs.forEach(r=>{h+='<div class="row"><div><b>'+(r.direction==='received'?'Received':'Repaid')+' '+money(r.amount)+'</b><div class="sub">'+fmtDate(r.repayment_date)+' · '+esc(r.notes||'')+'</div></div><div><button class="smallbtn" onclick="editLoanRepayment(\''+r.id+'\')">✎</button><button class="smallbtn dangerbtn" onclick="deleteLoanRepayment(\''+r.id+'\')">🗑</button></div></div>'});
  openModalRaw(h);
 }
-function renderPeople(){const all=state.people.map(p=>{const q=peopleBalances().find(x=>x.id===p.id);return q||p});$('peopleList').innerHTML=all.length?all.map(personHTML).join(''):'<div class="empty">Add people once; they will be suggested in split bills.</div>'}
+function renderPeople(){const base=state.people.map(p=>{const q=peopleBalances().find(x=>x.id===p.id);return q||p});const all=mbOrdered(base,'people');$('peopleList').innerHTML=all.length?all.map(p=>`<div class="row mb-user-sort-card" data-sort-id="${esc(p.id)}"><div class="left"><span class="mb-drag-handle" title="Long press and drag">☷</span><div class="bubble person">${otherPersonIcon()}</div><div><div class="name">${esc(p.name)}</div><div class="sub">${p.balance>0?'Owes you '+money(p.balance):'Settled'} · Owed ${money(p.totalOwed)} · Repaid ${money(Math.min(p.totalRepaid,p.totalOwed))}</div></div></div><div style="text-align:right"><b class="${p.balance>0?'red':'green'}">${money(p.balance)}</b><div style="margin-top:5px"><button class="smallbtn" onclick="openRepayment('${p.id}')">＋ Repay</button> <button class="smallbtn" onclick="editPerson('${p.id}')">✎</button> <button class="smallbtn" onclick="deletePerson('${p.id}')">🗑</button><span class="mb-sort-nav"><button type="button" class="smallbtn" onclick="mbMoveCard('people','${p.id}',-1,'#peopleList',renderPeople)">↑</button><button type="button" class="smallbtn" onclick="mbMoveCard('people','${p.id}',1,'#peopleList',renderPeople)">↓</button></span></div></div></div>`).join(''):'<div class="empty">Add people once; they will be suggested in split bills.</div>';mbBindCardDrag('people','#peopleList',renderPeople)}
 function reminderHTML(r){const overdue=!r.completed&&String(r.due_date).slice(0,10)<=today(),cls=r.completed?'green':overdue?'red':'amber';return `<div class="row"><div class="left"><div class="bubble reminder">${r.completed?'✓':overdue?'⚠️':'🔔'}</div><div><div class="name">${esc(r.title)}</div><div class="sub">${fmtDate(r.due_date)} · <b class="${cls}">${overdue?'⚠️ ':''}${r.completed?'Completed':'Pending'}</b>${r.note?' · '+esc(r.note):''}</div></div></div><div><button class="smallbtn" onclick="toggleReminder('${r.id}',${!r.completed})">${r.completed?'Undo':'Done'}</button><button class="smallbtn" onclick="editReminder('${r.id}')">✎</button><button class="smallbtn dangerbtn" onclick="deleteReminder('${r.id}')">🗑</button></div></div>`}
 
 function renderCalendar(){const y=calCursor.getUTCFullYear(),m=calCursor.getUTCMonth();$('calTitle').textContent=new Intl.DateTimeFormat('en-IN',{month:'long',year:'numeric',timeZone:'UTC'}).format(new Date(Date.UTC(y,m,15)));if($('calendarDate'))$('calendarDate').textContent=periodLabel(selectedDate||today());const firstDay=new Date(Date.UTC(y,m,1)),start=(firstDay.getUTCDay()||7)-1,last=new Date(Date.UTC(y,m+1,0)).getUTCDate(),cells=[];for(let i=0;i<42;i++){const day=i-start+1,valid=day>=1&&day<=last,ds=valid?`${y}-${String(m+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`:'';const sp=valid?personalSpendingBetween(ds,ds):0,recurring=valid?state.recurring_transactions.filter(r=>r.active&&recurringOccursOn(r,ds)).length:0,heat=sp===0?0:sp<1000?1:sp<3000?2:sp<7000?3:4;cells.push(`<div class="cal-cell heat${heat} ${!valid?'muted':''} ${ds===selectedDate?'selected':''}" ${valid?`data-date="${ds}" onclick="selectDate('${ds}')"`:''}><div class="cal-num">${valid?day:''}</div>${valid&&sp?`<div class="cal-spend red">−${money(sp)}</div>`:''}${recurring?`<span class="recurring-dot" title="${recurring} recurring item${recurring>1?'s':''}">•</span>`:''}</div>`)}$('calGrid').innerHTML=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(x=>`<div class="cal-day-name">${x}</div>`).join('')+cells.join('');const dayKey=String(selectedDate||today()).slice(0,10),tx=state.transactions.filter(t=>String(t.transaction_date).slice(0,10)===dayKey),income=sumType('income',dayKey),spent=personalSpendingBetween(dayKey,dayKey),transfer=sumType('transfer',dayKey),dayRecurring=state.recurring_transactions.filter(r=>r.active&&recurringOccursOn(r,dayKey));$('selectedDay').innerHTML=`<div class="total-line"><b>${fmtDate(dayKey)}</b><span class="badge">${tx.length} record${tx.length===1?'':'s'}</span></div><div class="three"><div><div class="label">INCOME</div><b class="green">${money(income)}</b></div><div><div class="label">SPENT</div><b class="red">${money(spent)}</b></div><div><div class="label">TRANSFER</div><b class="purple">${money(transfer)}</b></div></div>${dayRecurring.length?`<div class="selected-recurring"><div class="day-recurring-title"><span>Recurring on this date</span></div>${dayRecurring.map(r=>`<div class="mini-stat"><span>${esc(r.name)}<small>${r.frequency} · ${r.type}</small></span><button class="smallbtn" onclick="useRecurring('${r.id}','${dayKey}')">Use</button></div>`).join('')}</div>`:''}${tx.length?'<div style="margin-top:10px">'+tx.map(txHTML).join('')+'</div>':'<div class="empty">No transactions on this date.</div>'}`;$('reminderList').innerHTML=state.reminders.slice().sort((a,b)=>Number(Boolean(a.completed))-Number(Boolean(b.completed))||String(a.due_date).slice(0,10).localeCompare(String(b.due_date).slice(0,10))).map(reminderHTML).join('')||'<div class="empty">No reminders.</div>'}
@@ -335,8 +337,18 @@ else if(type==='split')h=splitForm(data);else if(type==='repayment'||type==='rep
 else if(type==='reminder')h=`<h2>${data?'Edit':'Add'} reminder</h2><form id="f"><label>Title</label><input name="title" required value="${esc(data?.title||'')}" placeholder="Pay electricity bill"><label>Due date</label><input name="due_date" type="date" required value="${esc(data?.due_date||today())}"><label>Note</label><textarea name="note">${esc(data?.note||'')}</textarea><button class="primary">Save reminder</button></form>`;
 else if(type==='recurring')h=`<h2>${data?'Edit':'Add'} recurring transaction</h2><form id="f"><label>Name</label><input name="name" required value="${esc(data?.name||'')}" placeholder="Netflix"><label>Type</label><select name="type"><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Transfer</option></select><label>Amount</label><input name="amount" type="number" step="0.01" min="0.01" required value="${data?.amount??''}"><label>Description</label><input name="description" required value="${esc(data?.description||'')}"><label>Account</label>${sel('account_id',state.accounts,data?.account_id||'',true)}<label>To account (transfer only)</label>${sel('to_account_id',state.accounts,data?.to_account_id||'',false)}<label>Category</label>${categoryOptions('expense',data?.category_id,true)}<label>Frequency</label><select name="frequency"><option value="daily" ${data?.frequency==='daily'?'selected':''}>Daily</option><option value="weekly" ${data?.frequency==='weekly'?'selected':''}>Weekly</option><option value="monthly" ${data?.frequency==='monthly'||!data?'selected':''}>Monthly</option><option value="yearly" ${data?.frequency==='yearly'?'selected':''}>Yearly</option></select><label>Next due date</label><input name="next_date" type="date" required value="${esc(data?.next_date||today())}"><label>Notes</label><textarea name="notes">${esc(data?.notes||'')}</textarea><button class="primary">Save recurring</button></form>`;
 else return;openModalRaw(h);$('f')?.addEventListener('submit',async e=>{e.preventDefault();await submitForm(type,data,e.target)});if(type==='split')renderSplitRows();if(type==='goal')updateGoalPlan()}
-function categoryModal(){return `<h2>Categories</h2><form id="f"><label>Name</label><input name="name" required placeholder="Rent"><label>Type</label><select name="type"><option value="expense">Expense</option><option value="income">Income</option></select><label>Parent category (optional)</label>${categoryParentSelect()}<label>Icon</label><input name="icon" value="🏷️"><label>Color</label><input name="color" value="#7666cf"><button class="primary">Add category</button></form><div class="section"><h2>Existing categories</h2></div>${state.categories.filter(c=>!c.parent_id).map(p=>`<div class="row"><div class="left"><div class="bubble">${esc(p.icon||'🏷️')}</div><div><div class="name">${esc(p.name)}</div><div class="sub">${esc(p.type)} · parent</div>${state.categories.filter(c=>c.parent_id===p.id).map(c=>`<div class="tree"><div class="row"><div><div class="name">↳ ${esc(c.name)}</div><div class="sub">${esc(c.type)} · subcategory</div></div><div><button type="button" class="smallbtn" onclick="editCategory('${c.id}')">✎</button> <button type="button" class="smallbtn" onclick="deleteCategory('${c.id}')">🗑</button></div></div></div>`).join('')}</div></div><div><button type="button" class="smallbtn" onclick="editCategory('${p.id}')">✎</button> <button type="button" class="smallbtn" onclick="deleteCategory('${p.id}')">🗑</button></div></div>`).join('')}`}
-function categoryParentSelect(value='',type='expense',excludeId=''){const parents=state.categories.filter(c=>!c.parent_id&&c.id!==excludeId&&(c.type===type||c.type==='both'));return `<select name="parent_id"><option value="">No parent</option>${parents.map(c=>`<option value="${c.id}" ${c.id===value?'selected':''}>${esc(c.icon||'🏷️')} ${esc(c.name)}${c.type==='both'?' · Both':''}</option>`).join('')}</select>`}
+function categoryModal(){
+ const parents=state.categories.filter(c=>!c.parent_id);
+ const po=(()=>{try{const o=JSON.parse(localStorage.getItem('mybudget_card_order_v3_'+(window.user?.id||'local'))||'{}');return o.categories_parents||[]}catch(e){return[]}})();
+ const rank=new Map(po.map((id,i)=>[String(id),i]));
+ parents.sort((a,b)=>(rank.has(String(a.id))?rank.get(String(a.id)):999999)-(rank.has(String(b.id))?rank.get(String(b.id)):999999));
+ return `<h2>Categories</h2><form id="f"><label>Name</label><input name="name" required placeholder="Rent"><label>Type</label><select name="type"><option value="expense">Expense</option><option value="income">Income</option></select><label>Parent category (optional)</label>${categoryParentSelect()}<label>Icon</label><input name="icon" value="🏷️"><label>Color</label><input name="color" value="#7666cf"><button class="primary">Add category</button></form><div class="section"><h2>Existing categories</h2><div class="sub">Long-press and drag parent categories or subcategories, or use ↑ ↓.</div></div><div id="mbCategoryParentList">${parents.map(p=>{
+   const subs=state.categories.filter(c=>c.parent_id===p.id);
+   const so=(()=>{try{const o=JSON.parse(localStorage.getItem('mybudget_card_order_v3_'+(window.user?.id||'local'))||'{}');return o['categories_sub_'+p.id]||[]}catch(e){return[]}})();
+   const sr=new Map(so.map((id,i)=>[String(id),i]));subs.sort((a,b)=>(sr.has(String(a.id))?sr.get(String(a.id)):999999)-(sr.has(String(b.id))?sr.get(String(b.id)):999999));
+   return `<div class="row mb-cat-parent" data-sort-id="${esc(p.id)}"><div class="left"><span class="mb-drag-handle mb-cat-handle" title="Long press and drag">☷</span><div class="bubble">${esc(p.icon||'🏷️')}</div><div><div class="name">${esc(p.name)}</div><div class="sub">${esc(p.type)} · parent</div><div class="mb-cat-sub-list" data-parent="${esc(p.id)}">${subs.map(c=>`<div class="tree mb-cat-sub" data-sort-id="${esc(c.id)}"><span class="mb-drag-handle mb-cat-sub-handle">☷</span><div><div class="name">↳ ${esc(c.name)}</div><div class="sub">${esc(c.type)} · subcategory</div></div><span class="mb-sort-nav"><button type="button" class="smallbtn" onclick="mbCategoryMove('sub','${c.id}','${p.id}',-1)">↑</button><button type="button" class="smallbtn" onclick="mbCategoryMove('sub','${c.id}','${p.id}',1)">↓</button></span><span><button type="button" class="smallbtn" onclick="editCategory('${c.id}')">✎</button> <button type="button" class="smallbtn" onclick="deleteCategory('${c.id}')">🗑</button></span></div>`).join('')}</div></div></div><div><span class="mb-sort-nav"><button type="button" class="smallbtn" onclick="mbCategoryMove('parent','${p.id}','',-1)">↑</button><button type="button" class="smallbtn" onclick="mbCategoryMove('parent','${p.id}','',1)">↓</button></span><button type="button" class="smallbtn" onclick="editCategory('${p.id}')">✎</button> <button type="button" class="smallbtn" onclick="deleteCategory('${p.id}')">🗑</button></div></div>`;
+ }).join('')}</div>`;
+}function categoryParentSelect(value='',type='expense',excludeId=''){const parents=state.categories.filter(c=>!c.parent_id&&c.id!==excludeId&&(c.type===type||c.type==='both'));return `<select name="parent_id"><option value="">No parent</option>${parents.map(c=>`<option value="${c.id}" ${c.id===value?'selected':''}>${esc(c.icon||'🏷️')} ${esc(c.name)}${c.type==='both'?' · Both':''}</option>`).join('')}</select>`}
 
 function splitForm(data=null){
   splitMode=data?.split_type||'equal';
@@ -386,7 +398,7 @@ function recalcSplit(){
   const preview=$('splitPreview');
   if(preview)preview.innerHTML=`<div class="split-preview-main"><span>Your share</span><b>${money(mine)}</b><span>Others owe you</span><b>${money(Math.max(0,sum))}</b></div><span class="${valid?'green':'red'}">${valid?'✓ Split balances':`⚠ Shares must add up to ${money(total)} · ${money(Math.max(0,total-combined))} remaining`}</span>`;
 }
-async function submitForm(type,data,f){const btn=f.querySelector('.primary');if(btn)btn.disabled=true;try{await saveModal(type,data,f);if(type==='category'){await loadData();render();openModal('category');return}closeModal();await loadData();render()}catch(e){alert(friendlyError(e))}finally{if(btn)btn.disabled=false}}
+async function submitForm(type,data,f){const btn=f.querySelector('.primary');if(btn)btn.disabled=true;try{await saveModal(type,data,f);await mbLoadForMutation(mbMutationTables(type));closeModal();render();mbToast(type==='budget'?(data?'Budget updated.':'Budget added.'):type==='goal'?(data?'Goal updated.':'Goal added.'):(data?'Updated successfully.':'Saved successfully.'))}catch(e){mbToast(friendlyError(e),'error');throw e}finally{if(btn)btn.disabled=false}}
 function friendlyError(e){const msg=String(e?.message||e||'Could not save.');if(/duplicate key value.*people.*name|people_user_id_name|people.*name.*unique/i.test(msg))return 'A person with this name already exists. Please use the existing person or choose a different name.';if(/duplicate key value.*categories/i.test(msg))return 'A category with this name and type already exists. Please choose a different name.';if(/permission denied/i.test(msg))return 'Permission denied. Please run the latest My Budget SQL migration in Supabase, then try again.';return msg}
 
 async function saveModal(type,data,f){const x=Object.fromEntries(new FormData(f).entries());if(type==='account'){const row={name:x.name,type:x.type,currency:(x.currency||'INR').toUpperCase(),opening_balance:Number(x.opening_balance||0)};data?await update('accounts',data.id,row):await insert('accounts',{...row,is_active:true})}
@@ -655,7 +667,7 @@ let mbFilter={type:'All',from:'',to:'',category:'',subcategory:'',account:'',per
 function openTransactionFilters(){openModalRaw(`<h2>Filter transactions</h2><form id="filterForm"><label>From date</label><input type="date" name="from" value="${esc(mbFilter.from)}"><label>To date</label><input type="date" name="to" value="${esc(mbFilter.to)}"><label>Type</label><select name="type"><option>All</option><option value="income">Income</option><option value="expense">Expense</option><option value="transfer">Transfer</option><option value="split">Split</option><option value="reimbursement">Reimbursement</option></select><label>Category</label><select name="category"><option value="">All categories</option>${categoryPool('expense').filter(c=>!c.parent_id).map(c=>`<option value="${c.id}" ${mbFilter.category===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select><label>Account</label>${sel('account',state.accounts,mbFilter.account,false)}<label>Person</label>${sel('person',state.people,mbFilter.person,false)}<label>Description contains</label><input name="description" value="${esc(mbFilter.description)}"><label>Special</label><select name="kind"><option value="all">All</option><option value="held">Held for others</option><option value="lendborrow">Lend / Borrow</option><option value="recurring">Recurring-linked</option></select><div class="action-row"><button type="button" class="secondary" onclick="mbFilter={type:'All',from:'',to:'',category:'',subcategory:'',account:'',person:'',description:'',kind:'all'};closeModal();renderTransactions()">Clear</button><button class="primary">Apply filters</button></div></form>`);$('filterForm').onsubmit=e=>{e.preventDefault();mbFilter={...mbFilter,...Object.fromEntries(new FormData(e.target))};closeModal();renderTransactions()}}
 function renderTransactions(){const types=['All','income','expense','transfer','split','reimbursement'],active=mbFilter.type||'All';$('filters').innerHTML=types.map(x=>`<button class="chip ${active===x?'active':''}" onclick="mbFilter.type='${x}';renderTransactions()">${x==='All'?'All':x[0].toUpperCase()+x.slice(1)}</button>`).join('')+'<button class="chip filter-button" onclick="openTransactionFilters()">⚙ Filters</button>';let arr=state.transactions.slice().sort((a,b)=>String(b.transaction_date).localeCompare(String(a.transaction_date)));if(active!=='All')arr=arr.filter(t=>t.type===active);if(mbFilter.from)arr=arr.filter(t=>String(t.transaction_date)>=mbFilter.from);if(mbFilter.to)arr=arr.filter(t=>String(t.transaction_date)<=mbFilter.to);if(mbFilter.category)arr=arr.filter(t=>txAllocations(t).some(x=>rootCategory(state.categories.find(c=>c.id===x.category_id))?.id===mbFilter.category||x.category_id===mbFilter.category));if(mbFilter.account)arr=arr.filter(t=>t.account_id===mbFilter.account||(state.transaction_accounts||[]).some(x=>x.transaction_id===t.id&&x.account_id===mbFilter.account));if(mbFilter.person)arr=arr.filter(t=>t.person_id===mbFilter.person||state.split_participants.some(x=>{const st=state.split_transactions.find(s=>s.transaction_id===t.id);return st&&x.split_transaction_id===st.id&&x.person_id===mbFilter.person}));if(mbFilter.description)arr=arr.filter(t=>String(t.description||'').toLowerCase().includes(mbFilter.description.toLowerCase()));if(mbFilter.kind==='recurring')arr=arr.filter(t=>t.recurring_id);if(mbFilter.kind==='held'){const rows=state.money_held.slice().sort((a,b)=>String(b.received_date).localeCompare(String(a.received_date)));$('txList').innerHTML=rows.map(heldHTML).join('')||'<div class="empty">No Money Held records.</div>';return}if(mbFilter.kind==='lendborrow'){const rows=[...state.loans.map(l=>({kind:'loan',id:l.id,date:l.loan_date,label:(l.direction==='lend'?'Lend · ':'Borrow · ')+personName(l.person_id),amount:l.amount})),...state.loan_repayments.map(r=>({kind:'repayment',id:r.id,date:r.repayment_date,label:(r.direction==='received'?'Received · ':'Repaid · ')+personName(r.person_id),amount:r.amount}))].sort((a,b)=>String(b.date).localeCompare(String(a.date)));$('txList').innerHTML=rows.map(r=>`<div class="row"><div><div class="name">${esc(r.label)}</div><div class="sub">${fmtDate(r.date)}</div></div><div><b>${money(r.amount)}</b><button class="smallbtn" onclick="${r.kind==='loan'?`editLoan('${r.id}')`:`editLoanRepayment('${r.id}')`}">Edit</button><button class="smallbtn dangerbtn" onclick="${r.kind==='loan'?`deleteLoan('${r.id}')`:`deleteLoanRepayment('${r.id}')`}">Delete</button></div></div>`).join('')||'<div class="empty">No lend/borrow records.</div>';return}$('txList').innerHTML=arr.map(txHTML).join('')||'<div class="empty">No transactions found.</div>'}
 function txHTML(t){const icon={income:'↑',expense:'−',transfer:'⇄',split:'🔀',reimbursement:'↩'}[t.type]||'•',sign=t.type==='income'||t.type==='reimbursement'?'+':t.type==='expense'||t.type==='split'?'−':'',other=t.type==='transfer'?` → ${esc(accountName(t.to_account_id))}`:'',share=t.type==='split'?` · ${esc(getNickname())} share ${money(splitMyShare(t))}`:'',cats=txAllocations(t).map(a=>catName(a.category_id)).filter(Boolean);return `<div class="row transaction-row"><div class="left"><div class="bubble ${t.type==='income'||t.type==='reimbursement'?'income':t.type}">${icon}</div><div class="tx-content"><div class="name">${esc(t.description||'(No description)')}</div><div class="sub">${fmtDate(t.transaction_date)} · ${esc(accountAllocationSummary(t))}${other}${share}</div>${cats.length?`<div class="sub">Category: ${esc(cats.join(', '))}</div>`:''}${t.notes?`<div class="sub">${esc(t.notes)}</div>`:''}</div></div><div class="tx-right" style="text-align:right"><b class="${sign==='+'?'green':sign==='−'?'red':''}">${sign}${money(t.amount)}</b><div class="action-row"><button class="smallbtn" onclick="editTx('${t.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteTx('${t.id}')">Delete</button></div></div></div>`}
-async function submitForm(type,data,f){const btn=f.querySelector('.primary');if(btn)btn.disabled=true;try{await saveModal(type,data,f);if(type==='category'){await loadData();render();openModal('category');mbToast(data?'Category updated.':'Category added.');return}closeModal();await loadData();render();mbToast(type==='budget'?(data?'Budget updated.':'Budget added.'):type==='goal'?(data?'Goal updated.':'Goal added.'):(data?'Updated successfully.':'Saved successfully.'))}catch(e){mbToast(friendlyError(e),'error');throw e}finally{if(btn)btn.disabled=false}}
+async function submitForm(type,data,f){const btn=f.querySelector('.primary');if(btn)btn.disabled=true;try{await saveModal(type,data,f);await mbLoadForMutation(mbMutationTables(type));closeModal();render();mbToast(type==='budget'?(data?'Budget updated.':'Budget added.'):type==='goal'?(data?'Goal updated.':'Goal added.'):(data?'Updated successfully.':'Saved successfully.'))}catch(e){mbToast(friendlyError(e),'error');throw e}finally{if(btn)btn.disabled=false}}
 const MB_pdfBase=exportPDF;
 function exportPDF(){if(!window.jspdf)return mbToast('PDF library is unavailable.','error');const {jsPDF}=window.jspdf,doc=new jsPDF({unit:'pt',format:'a4'}),W=595,M=36,H=842;let y=44;const text=s=>String(s??'').replace(/[^\x20-\x7E]/g,'');const m=n=>'INR '+Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2});const page=()=>{doc.addPage();y=44};const ensure=h=>{if(y+h>H-40)page()};const head=t=>{ensure(28);doc.setFontSize(17);doc.setFont(undefined,'bold');doc.text(text(t),M,y);y+=24;doc.setFont(undefined,'normal')};const line=(s,b=false)=>{ensure(16);doc.setFontSize(8.5);doc.setFont(undefined,b?'bold':'normal');doc.text(text(s),M,y);y+=13};doc.setFontSize(24);doc.setFont(undefined,'bold');doc.text('My Budget',M,y);y+=22;doc.setFontSize(11);doc.setFont(undefined,'normal');doc.text('Financial Report · '+text(new Date().toLocaleString('en-IN',{timeZone:'Asia/Kolkata'})),M,y);y+=28;const inc=sumType('income',ym()),sp=personalSpendingBetween(ym()+'-01',today()),sav=inc-sp;[['MONTHLY INCOME',m(inc)],['MONTHLY SPENT',m(sp)],['MONTHLY SAVED',m(sav)]].forEach((q,i)=>{const x=M+i*176;doc.roundedRect(x,y,165,54,8,8);doc.setFontSize(8);doc.text(q[0],x+10,y+17);doc.setFontSize(15);doc.setFont(undefined,'bold');doc.text(text(q[1]),x+10,y+39);doc.setFont(undefined,'normal')});y+=70;head('Financial summary');line('Net balance: '+m(totalBalance()),true);line('People receivable: '+m(owedTotal()));line('Money held for others: '+m(moneyHeldOutstanding()));head('Spending by category');categoryGroups([ym()+'-01',today()]).forEach(g=>line(`${g.root.name}: ${m(g.spent)} · ${sp?(g.spent/sp*100).toFixed(1):0}%`));head('Budgets');state.budgets.forEach(b=>{const q=budgetStatus(b);line(`${b.name} · ${budgetCategoryLabel(b)} · ${m(q.used)} / ${m(b.amount)} · ${q.pct.toFixed(0)}%`)});head('Goals');state.goals.forEach(g=>line(`${g.name} · Existing ${m(g.existing_amount)} · Saved ${m(g.saved_amount)} / ${m(g.target_amount)} · ${(g.target_amount?g.saved_amount/g.target_amount*100:0).toFixed(0)}%`));head('Reminders');state.reminders.forEach(r=>line(`${r.due_date} · ${r.completed?'Completed':'Pending'} · ${r.title}${r.note?' · '+r.note:''}`));head('People');peopleBalances().forEach(p=>line(`${p.name} · They owe ${m(p.balance)} · You owe ${m(p.iOwe)} · Split repaid ${m(p.totalRepaid)} · Held pending ${m(p.heldPending)} · Loan received ${m(p.loanReceived)} · Loan repaid ${m(p.loanSent)}`));head('Lend & Borrow');state.loans.forEach(l=>line(`${l.loan_date} · ${l.direction==='lend'?'LEND':'BORROW'} · ${personName(l.person_id)} · ${m(l.amount)} · ${accountName(l.account_id)}`));state.loan_repayments.forEach(r=>line(`${r.repayment_date} · ${r.direction==='received'?'RECEIVED':'REPAID'} · ${personName(r.person_id)} · ${m(r.amount)} · ${accountName(r.account_id)}`));head('Money Held');state.money_held.forEach(h=>line(`${h.received_date} · ${personName(h.person_id)} · ${m(h.amount)} · Settled ${m(h.settled_amount||0)} · ${h.status}`));head('Recurring schedules');state.recurring_transactions.forEach(r=>line(`${r.name} · ${r.frequency} · ${m(r.amount)} · next ${r.next_date} · ${r.active?'Active':'Paused'}`));head('All Transactions');state.transactions.slice().sort((a,b)=>String(a.transaction_date).localeCompare(String(b.transaction_date))).forEach((t,i)=>line(`${i+1}. ${t.transaction_date} · ${t.type} · ${t.description||'(No description)'} · ${m(t.amount)} · ${accountAllocationSummary(t)} · ${txAllocations(t).map(x=>catName(x.category_id)).join(', ')}`));head('Insights');line(`Savings rate: ${inc?(sav/inc*100).toFixed(1):0}%`);line(weekdayInsightForRange(ym()+'-01',today()));line(salaryWeekInsightForRange(ym()+'-01',today()));line('Savings runway: '+runway());line('Next month forecast: '+m(nextMonthPrediction()));doc.save('my-budget-professional-report.pdf');mbToast('Professional PDF report created.')}
 const MB_openModal3=openModal;
@@ -1551,4 +1563,985 @@ exportPDF=exportPDFPlus;
   };
 
   const style=document.createElement('style');style.textContent=`.tx-account-balance{font-size:12px!important;opacity:.86}.timestamp-meta{display:block!important;line-height:1.4!important;margin-top:4px}.timestamp-meta br{display:block}@media(max-width:560px){.tx-account-balance,.timestamp-meta{font-size:11px!important}}`;document.head.appendChild(style);
+})();
+
+/* ===== My Budget vFinal performance + unified ledger hardening ===== */
+(function(){
+  const fastRefresh=window.mbLoadForMutation||mbLoadForMutation;
+  const mutationTables=window.mbMutationTables||mbMutationTables;
+
+  // Unified transaction rows: normal transactions + Split + Lend/Borrow + Money Held.
+  function unifiedRows(){
+    const rows=state.transactions.map(t=>({...t,__special:null}));
+    const ids=new Set(state.transactions.map(t=>t.id));
+    state.split_transactions.forEach(st=>{if(!st.transaction_id||ids.has(st.transaction_id))return;rows.push({id:st.transaction_id,type:'split',amount:Number(st.total_amount||0),description:st.description||'Split transaction',transaction_date:st.transaction_date||localDate(st.created_at)||today(),account_id:st.account_id||null,created_at:st.created_at,updated_at:st.updated_at,__special:'split',__specialId:st.id});});
+    state.loans.forEach(l=>rows.push({id:'loan-'+l.id,type:'loan',amount:Number(l.amount||0),description:l.direction==='lend'?`Lent to ${personName(l.person_id)}`:`Borrowed from ${personName(l.person_id)}`,transaction_date:l.loan_date||localDate(l.created_at)||today(),account_id:l.account_id||null,created_at:l.created_at,updated_at:l.updated_at,notes:l.notes||'',direction:l.direction,person_id:l.person_id,__special:'loan',__specialId:l.id}));
+    state.loan_repayments.forEach(r=>rows.push({id:'loan-repayment-'+r.id,type:'loan_repayment',amount:Number(r.amount||0),description:r.direction==='received'?`Repayment received from ${personName(r.person_id)}`:`Repayment sent to ${personName(r.person_id)}`,transaction_date:r.repayment_date||localDate(r.created_at)||today(),account_id:r.account_id||null,created_at:r.created_at,updated_at:r.updated_at,notes:r.notes||'',direction:r.direction,person_id:r.person_id,__special:'loan_repayment',__specialId:r.id}));
+    state.money_held.forEach(h=>rows.push({id:'held-'+h.id,type:'money_held',amount:Number(h.amount||0),description:`Money held for ${personName(h.person_id)}`,transaction_date:h.received_date||localDate(h.created_at)||today(),account_id:h.account_id||null,created_at:h.created_at,updated_at:h.updated_at,notes:h.purpose||h.notes||'',status:h.status,person_id:h.person_id,__special:'held',__specialId:h.id}));
+    return rows.sort((a,b)=>{const am=Date.parse(a.created_at||'')||0,bm=Date.parse(b.created_at||'')||0;return bm-am||String(b.id).localeCompare(String(a.id))});
+  }
+
+  function ledgerEffects(t){
+    const n=Number(t.amount||0),out=[];if(!Number.isFinite(n)||!n)return out;
+    if(t.__special==='loan'){if(t.account_id)out.push([t.account_id,t.direction==='borrow'?n:-n]);return out;}
+    if(t.__special==='loan_repayment'){if(t.account_id)out.push([t.account_id,t.direction==='received'?n:-n]);return out;}
+    if(t.__special==='held'){if(t.account_id)out.push([t.account_id,Math.max(0,n-(Number(t.settled_amount||0)))]);return out;}
+    if(t.type==='transfer'){if(t.account_id)out.push([t.account_id,-n]);if(t.to_account_id)out.push([t.to_account_id,n]);return out;}
+    const alloc=(state.transaction_accounts||[]).filter(x=>x.transaction_id===t.id&&x.account_id);
+    if(alloc.length){const total=alloc.reduce((s,x)=>s+Number(x.amount||0),0)||n;alloc.forEach(x=>{const share=Number(x.amount||0);const sign=(t.type==='income'||t.type==='reimbursement')?1:-1;out.push([x.account_id,sign*(total?share*n/total:0)])});return out;}
+    if(t.account_id){if(t.type==='income'||t.type==='reimbursement')out.push([t.account_id,n]);else if(t.type==='expense'||t.type==='split')out.push([t.account_id,-n]);}
+    return out;
+  }
+  function balanceMap(rows){
+    const running=new Map(state.accounts.map(a=>[a.id,Number(a.opening_balance||0)])),result=new Map();
+    rows.slice().sort((a,b)=>(Date.parse(a.created_at||'')||0)-(Date.parse(b.created_at||'')||0)||String(a.id).localeCompare(String(b.id))).forEach(t=>ledgerEffects(t).forEach(([id,delta])=>{const next=(running.get(id)||0)+delta;running.set(id,next);if(!result.has(t.id))result.set(t.id,new Map());result.get(t.id).set(id,next)}));
+    return result;
+  }
+
+  function categoryKeyMatch(t,catId){return txAllocations(t).some(x=>{const c=state.categories.find(q=>q.id===x.category_id);return x.category_id===catId||rootCategory(c)?.id===catId})}
+
+  window.renderTransactions=function(){
+    const active=mbFilter.type||'All',kind=mbFilter.kind||'all';
+    const filterTypes=['All','income','expense','transfer','split','reimbursement'];
+    $('filters').innerHTML=filterTypes.map(x=>`<button class="chip ${kind==='all'&&active===x?'active':''}" onclick="mbFilter.type='${x}';mbFilter.kind='all';renderTransactions()">${x==='All'?'All':x[0].toUpperCase()+x.slice(1)}</button>`).join('')+`<button class="chip ${kind==='held'?'active':''}" onclick="mbFilter.type='All';mbFilter.kind='held';renderTransactions()">Held for others</button><button class="chip ${kind==='lendborrow'?'active':''}" onclick="mbFilter.type='All';mbFilter.kind='lendborrow';renderTransactions()">Lend / Borrow</button><button class="chip filter-button" onclick="openTransactionFilters()">⚙ Filters</button><button class="chip" onclick="clearAllTransactionFilters()">Clear filters</button>`;
+    let arr=unifiedRows();
+    if(kind==='held')arr=arr.filter(t=>t.__special==='held');
+    else if(kind==='lendborrow')arr=arr.filter(t=>t.__special==='loan'||t.__special==='loan_repayment');
+    else if(active!=='All')arr=arr.filter(t=>t.type===active);
+    if(mbFilter.from)arr=arr.filter(t=>String(t.transaction_date).slice(0,10)>=mbFilter.from);
+    if(mbFilter.to)arr=arr.filter(t=>String(t.transaction_date).slice(0,10)<=mbFilter.to);
+    if(mbFilter.category)arr=arr.filter(t=>!t.__special&&categoryKeyMatch(t,mbFilter.category));
+    if(mbFilter.subcategory)arr=arr.filter(t=>!t.__special&&txAllocations(t).some(x=>x.category_id===mbFilter.subcategory));
+    if(mbFilter.account)arr=arr.filter(t=>t.account_id===mbFilter.account||t.to_account_id===mbFilter.account||(state.transaction_accounts||[]).some(x=>x.transaction_id===t.id&&x.account_id===mbFilter.account));
+    if(mbFilter.person)arr=arr.filter(t=>t.person_id===mbFilter.person||(!t.__special&&state.split_participants.some(x=>x.person_id===mbFilter.person&&state.split_transactions.some(st=>st.id===x.split_transaction_id&&st.transaction_id===t.id))));
+    if(mbFilter.description)arr=arr.filter(t=>String(t.description||t.notes||'').toLowerCase().includes(mbFilter.description.toLowerCase()));
+    if(kind==='all'&&active==='All'&&mbFilter.kind==='recurring')arr=arr.filter(t=>t.recurring_id);
+    window.__mbTxBalanceMap=balanceMap(unifiedRows());
+    $('txList').innerHTML=arr.map(t=>window.txHTML(t)).join('')||'<div class="empty">No transactions found.</div>';
+    const count=$('txCount');if(count)count.textContent=`Showing ${arr.length} transaction${arr.length===1?'':'s'}`;
+  };
+
+  // Preserve settled split repayments when editing a split. A changed share cannot
+  // be smaller than the amount already paid by that person.
+  const oldSave=window.saveModal;
+  window.saveModal=async function(type,data,f){
+    if(type==='loan'&&data?.id){
+      const amount=Number(f.elements.amount?.value||0), direction=f.elements.direction?.value, old=state.loans.find(x=>x.id===data.id);
+      if(old){
+        const paid=state.loan_repayments.filter(r=>r.person_id===old.person_id&&r.direction===(old.direction==='lend'?'received':'sent')).reduce((s,r)=>s+Number(r.amount||0),0);
+        if(direction===old.direction && amount<paid-.01)throw new Error(`Loan amount cannot be less than ${money(paid)} already repaid/received.`);
+        if(direction!==old.direction && paid>.01)throw new Error('This loan cannot change from Lend to Borrow (or vice versa) while repayments exist.');
+      }
+    }
+    if(type==='loanRepaymentEdit'&&data?.id){
+      const r=state.loan_repayments.find(x=>x.id===data.id), person=r?state.people.find(p=>p.id===r.person_id):null, amount=Number(f.elements.amount?.value||0), direction=f.elements.direction?.value;
+      if(r&&person){
+        const bal=loanPersonBalance(person.id);
+        const available=direction==='received' ? bal.theyOwe + (r.direction==='received'?Number(r.amount||0):0) : bal.iOwe + (r.direction==='sent'?Number(r.amount||0):0);
+        if(amount>available+.01)throw new Error(`Repayment cannot exceed outstanding ${money(available)}.`);
+      }
+    }
+    if(type==='split'&&data?.id){
+      const previous=new Map(state.split_participants.filter(p=>p.split_transaction_id===data.id).map(p=>[p.person_id,Number(p.amount_paid||0)]));
+      const total=Number(f.elements.total_amount?.value||0);
+      const me=splitRows.find(r=>r.isMe||r.person_id==='__me__');
+      const people=splitRows.filter(r=>!(r.isMe||r.person_id==='__me__')&&r.person_id);
+      for(const r of people){const paid=previous.get(r.person_id)||0;if(paid>Number(r.amount||0)+.01)throw new Error(`Share for ${personName(r.person_id)} cannot be less than ${money(paid)} already repaid.`)}
+      const result=await oldSave(type,data,f);
+      // oldSave rebuilds participants. Restore the previous paid amounts for matching people.
+      const current=state.split_participants.filter(p=>p.split_transaction_id===data.id);
+      for(const p of current){const paid=previous.get(p.person_id)||0;if(paid>0){await update('split_participants',p.id,{amount_paid:paid,status:Number(p.amount||0)-paid<=.01?'settled':'pending'});}}
+      return result;
+    }
+    return oldSave(type,data,f);
+  };
+
+  // Faster CRUD: refresh only tables affected by the operation.
+  const baseSubmit=window.submitForm||submitForm;
+  window.submitForm=async function(type,data,f){
+    const btn=f?.querySelector('.primary');if(btn)btn.disabled=true;
+    try{
+      await window.saveModal(type,data,f);
+      await fastRefresh(mutationTables(type));
+      closeModal();render();
+      mbToast(type==='budget'?(data?'Budget updated.':'Budget added.'):type==='goal'?(data?'Goal updated.':'Goal added.'):(data?'Updated successfully.':'Saved successfully.'));
+    }catch(e){mbToast(friendlyError(e),'error');throw e}
+    finally{if(btn)btn.disabled=false}
+  };
+
+  // These operations are deliberately local after a successful database mutation.
+  window.deleteLoan=async id=>{if(!confirm('Delete this loan?'))return;try{await del('loans',id);removeLocal('loans',id);render();mbToast('Loan deleted.')}catch(e){mbToast(friendlyError(e),'error')}};
+  window.deleteLoanRepayment=async id=>{if(!confirm('Delete this repayment?'))return;try{await del('loan_repayments',id);removeLocal('loan_repayments',id);render();mbToast('Repayment deleted.')}catch(e){mbToast(friendlyError(e),'error')}};
+  window.deleteMoneyHeld=async id=>{if(!confirm('Delete this Money Held record?'))return;try{await del('money_held',id);removeLocal('money_held',id);render();mbToast('Money Held deleted.')}catch(e){mbToast(friendlyError(e),'error')}};
+
+  window.deleteTx=async id=>{const t=state.transactions.find(x=>x.id===id);if(!t||!confirm('Delete this transaction?'))return;try{
+    if(t.type==='split'){const st=state.split_transactions.find(s=>s.transaction_id===id);if(st){await sb.from('split_participants').delete().eq('split_transaction_id',st.id);await del('split_transactions',st.id);state.split_participants=state.split_participants.filter(x=>x.split_transaction_id!==st.id);removeLocal('split_transactions',st.id)}}
+    if(t.type==='reimbursement'){const r=state.reimbursements.find(x=>x.transaction_id===id);if(r){await del('reimbursements',r.id);removeLocal('reimbursements',r.id)}}
+    const gc=state.goal_contributions.find(x=>x.transaction_id===id);if(gc){await del('goal_contributions',gc.id);removeLocal('goal_contributions',gc.id)}
+    await sb.from('transaction_categories').delete().eq('transaction_id',id);await sb.from('transaction_accounts').delete().eq('transaction_id',id);await del('transactions',id);removeLocal('transactions',id);state.transaction_categories=state.transaction_categories.filter(x=>x.transaction_id!==id);state.transaction_accounts=state.transaction_accounts.filter(x=>x.transaction_id!==id);render();mbToast('Transaction deleted.');
+  }catch(e){mbToast(friendlyError(e),'error')}};
+
+  window.deleteSplitSpecial=async id=>{const st=state.split_transactions.find(x=>x.id===id);if(!st||!confirm('Delete this split transaction?'))return;try{const txId=st.transaction_id;await sb.from('split_participants').delete().eq('split_transaction_id',id);await del('split_transactions',id);if(txId){await sb.from('transaction_categories').delete().eq('transaction_id',txId);await sb.from('transaction_accounts').delete().eq('transaction_id',txId);await del('transactions',txId);removeLocal('transactions',txId);state.transaction_categories=state.transaction_categories.filter(x=>x.transaction_id!==txId);state.transaction_accounts=state.transaction_accounts.filter(x=>x.transaction_id!==txId)}removeLocal('split_transactions',id);state.split_participants=state.split_participants.filter(x=>x.split_transaction_id!==id);render();mbToast('Split transaction deleted.')}catch(e){mbToast(friendlyError(e),'error')}};
+
+  // Reconciliation and all other pages get the same fast local-delete behavior.
+  window.deleteAccount=async id=>{if(!confirm('Delete account? It must not be referenced by transactions.'))return;try{await del('accounts',id);removeLocal('accounts',id);render();mbToast('Account deleted.')}catch(e){mbToast(friendlyError(e),'error')}};
+  window.deletePerson=async id=>{if(!confirm('Delete person? Existing splits, reimbursements or loans may prevent deletion.'))return;try{await del('people',id);removeLocal('people',id);render();mbToast('Person deleted.')}catch(e){mbToast(friendlyError(e),'error')}};
+  window.deleteGoal=async id=>{if(!confirm('Delete goal and its contributions?'))return;try{const {error}=await sb.from('goal_contributions').delete().eq('goal_id',id).eq('user_id',user.id);if(error)throw error;state.goal_contributions=state.goal_contributions.filter(x=>x.goal_id!==id);await del('goals',id);removeLocal('goals',id);render();mbToast('Goal deleted.')}catch(e){mbToast(friendlyError(e),'error')}};
+  window.deleteReminder=async id=>{if(!confirm('Delete reminder?'))return;try{await del('reminders',id);removeLocal('reminders',id);render();mbToast('Reminder deleted.')}catch(e){mbToast(friendlyError(e),'error')}};
+  window.deleteRecurring=async id=>{if(!confirm('Delete recurring schedule? Existing recorded transactions will remain.'))return;try{await del('recurring_transactions',id);removeLocal('recurring_transactions',id);state.recurring_occurrences=state.recurring_occurrences.filter(x=>x.recurring_id!==id);render();mbToast('Recurring schedule deleted.')}catch(e){mbToast(friendlyError(e),'error')}};
+
+  // Clear category view into explicit parent/subcategory groups.
+  const originalOpen=window.openModal;
+  window.openModal=function(type,data=null){
+    if(type!=='category')return originalOpen(type,data);
+    const parents=state.categories.filter(c=>!c.parent_id).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+    const children=state.categories.filter(c=>c.parent_id);
+    const grouped=parents.filter(p=>children.some(c=>c.parent_id===p.id)).map(p=>{const kids=children.filter(c=>c.parent_id===p.id).sort((a,b)=>String(a.name).localeCompare(String(b.name)));return `<div class="category-group-card"><div class="category-group-head"><div><div class="name">${esc(p.icon||'🏷️')} ${esc(p.name)}</div><div class="sub">${esc(p.type)} · Parent · ${kids.length} subcategor${kids.length===1?'y':'ies'}</div></div><div class="action-row"><button type="button" class="smallbtn" onclick="editCategory('${p.id}')">Edit</button><button type="button" class="smallbtn dangerbtn" onclick="deleteCategory('${p.id}')">Delete</button></div></div><div class="category-sub-list">${kids.map(c=>`<div class="category-sub-row"><div><div class="name">↳ ${esc(c.name)}</div><div class="sub">${esc(c.type)} · Subcategory</div></div><div class="action-row"><button type="button" class="smallbtn" onclick="editCategory('${c.id}')">Edit</button><button type="button" class="smallbtn dangerbtn" onclick="deleteCategory('${c.id}')">Delete</button></div></div>`).join('')}</div></div>`}).join('');
+    const singles=parents.filter(p=>!children.some(c=>c.parent_id===p.id)).map(c=>`<div class="category-single-row"><div><div class="name">${esc(c.icon||'🏷️')} ${esc(c.name)}</div><div class="sub">${esc(c.type)} · Standalone category</div></div><div class="action-row"><button type="button" class="smallbtn" onclick="editCategory('${c.id}')">Edit</button><button type="button" class="smallbtn dangerbtn" onclick="deleteCategory('${c.id}')">Delete</button></div></div>`).join('');
+    openModalRaw(`<h2>Categories</h2><p class="sub">Parent categories contain related subcategories. Standalone categories are shown separately.</p><form id="categoryAddForm"><label>Name</label><input name="name" required placeholder="Dining"><label>Type</label><select name="type"><option value="expense">Expense</option><option value="income">Income</option></select><label>Parent category (optional)</label>${categoryParentSelect()}<label>Icon</label><input name="icon" value="🏷️"><label>Color</label><input name="color" value="#7666cf"><button class="primary">Add category</button></form><div class="section"><h2>Parent categories & subcategories</h2></div>${grouped||'<div class="empty">No grouped categories yet.</div>'}<div class="section"><h2>Standalone categories</h2></div>${singles||'<div class="empty">No standalone categories.</div>'}`);
+    const f=$('categoryAddForm');if(f)f.onsubmit=async e=>{e.preventDefault();const btn=f.querySelector('.primary');btn.disabled=true;try{await saveModal('category',null,f);await fastRefresh(['categories']);render();openModal('category');mbToast('Category added.')}catch(err){mbToast(friendlyError(err),'error')}finally{btn.disabled=false}};
+  };
+
+  // Category edits/deletes avoid a full application reload.
+  window.editCategory=async id=>{const c=state.categories.find(x=>x.id===id);if(!c)return;openModalRaw(`<h2>Edit category</h2><form id="categoryEditForm"><label>Name</label><input name="name" required value="${esc(c.name)}"><label>Type</label><select name="type"><option value="expense" ${c.type==='expense'?'selected':''}>Expense</option><option value="income" ${c.type==='income'?'selected':''}>Income</option><option value="both" ${c.type==='both'?'selected':''}>Both</option></select><label>Parent</label>${categoryParentSelect(c.parent_id||'',c.type,c.id)}<label>Icon</label><input name="icon" value="${esc(c.icon||'🏷️')}"><label>Color</label><input name="color" value="${esc(c.color||'#7666cf')}"><button class="primary">Update category</button></form>`);$('categoryEditForm').onsubmit=async e=>{e.preventDefault();const x=Object.fromEntries(new FormData(e.target)),btn=e.target.querySelector('.primary');btn.disabled=true;try{const updated=await update('categories',id,{name:x.name,type:x.type,parent_id:x.parent_id||null,icon:x.icon,color:x.color});const i=state.categories.findIndex(q=>q.id===id);if(i>=0)state.categories[i]=updated;closeModal();render();openModal('category');mbToast('Category updated.')}catch(err){mbToast(friendlyError(err),'error')}finally{btn.disabled=false}}};
+
+  // Final responsive styling for the long transaction ledger and category hierarchy.
+  const st=document.createElement('style');st.textContent=`
+    #txList{max-height:none;overflow:visible}
+    .transaction-row{align-items:flex-start}
+    .transaction-row .tx-content{min-width:0;flex:1}
+    .transaction-row .action-row{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px;margin-top:7px}
+    .category-group-card{border:1px solid var(--line);border-radius:16px;padding:14px;margin:10px 0;background:var(--card,#fff)}
+    .category-group-head,.category-sub-row,.category-single-row{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+    .category-sub-list{margin:10px 0 0 20px;border-left:2px solid var(--line);padding-left:12px}
+    .category-sub-row{padding:10px 0;border-bottom:1px solid var(--line)}
+    .category-sub-row:last-child{border-bottom:0}
+    .category-single-row{padding:12px;border:1px solid var(--line);border-radius:14px;margin:8px 0}
+    @media(max-width:700px){.transaction-row .tx-right{min-width:112px}.transaction-row .smallbtn{min-height:34px;padding:7px 9px}.category-sub-list{margin-left:8px}.category-group-head,.category-sub-row,.category-single-row{gap:8px}.category-group-head .action-row,.category-sub-row .action-row,.category-single-row .action-row{flex-wrap:wrap}}
+  `;document.head.appendChild(st);
+})();
+
+/* ===== Final speed patch for Money Held / loan repayment timestamps ===== */
+(function(){
+  const fast=window.mbLoadForMutation||mbLoadForMutation;
+  const prevOpen=window.openModal;
+  window.openModal=function(type,data=null){
+    const result=prevOpen(type,data);
+    if(type==='moneyHeld'){
+      const f=$('f');
+      if(f){
+        f.onsubmit=async e=>{e.preventDefault();const btn=f.querySelector('.primary');if(btn)btn.disabled=true;try{const x=Object.fromEntries(new FormData(f)),row={person_id:x.person_id,amount:Number(x.amount),purpose:x.purpose||null,account_id:x.account_id,received_date:String(x.received_date).slice(0,10),notes:x.notes||null};if(data&&Number(data.settled_amount||0)>row.amount+.01)throw new Error(`Amount cannot be less than ${money(data.settled_amount||0)} already settled.`);const timestamp=x.transaction_timestamp&&window.__mbTimestamp?window.__mbTimestamp.localDTToISO(x.transaction_timestamp):null;const saved=data?await update('money_held',data.id,{...row,...(timestamp?{created_at:timestamp,updated_at:new Date().toISOString()}: {})}):await insert('money_held',{...row,status:'pending',settled_date:null,...(timestamp?{created_at:timestamp}: {})});const i=state.money_held.findIndex(q=>q.id===saved.id);if(i>=0)state.money_held[i]=saved;else state.money_held.push(saved);closeModal();render();mbToast(data?'Money Held updated.':'Money Held added.')}catch(err){mbToast(friendlyError(err),'error')}finally{if(btn)btn.disabled=false}};
+      }
+    }
+    return result;
+  };
+
+  const prevSave=window.saveModal;
+  window.saveModal=async function(type,data,f){
+    const result=await prevSave(type,data,f);
+    if(type==='loanRepaymentEdit'&&data?.id){
+      const ts=f?.elements?.transaction_timestamp?.value;
+      if(ts&&window.__mbTimestamp){try{await sb.from('loan_repayments').update({created_at:window.__mbTimestamp.localDTToISO(ts),updated_at:new Date().toISOString()}).eq('id',data.id).eq('user_id',user.id)}catch(e){console.warn('Loan repayment timestamp update skipped:',e)}}
+    }
+    return result;
+  };
+
+  // Transaction list filters are date-based, while ordering is always Recorded timestamp.
+  // Keep a small visible count to make it clear that special records are included.
+  const oldRender=window.renderTransactions;
+  window.renderTransactions=function(){oldRender?.();const c=$('txCount');if(c&&!c.textContent)c.textContent='All loaded transactions';};
+})();
+
+
+/* ===== Final Recorded Date/Time consistency patch ===== */
+(function(){
+  const pad=n=>String(n).padStart(2,'0');
+  function localNow(){
+    const d=new Date();
+    const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d).map(x=>[x.type,x.value]));
+    return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+  }
+  function toLocal(iso,fallbackDate){
+    if(iso){const d=new Date(iso);if(!isNaN(d)){const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(d).map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;}}
+    if(fallbackDate)return String(fallbackDate).slice(0,10)+'T00:00';
+    return localNow();
+  }
+  function hideDateField(f,name,timestamp){
+    const el=f?.elements?.[name]; if(!el)return;
+    const label=el.closest('label') || el.previousElementSibling;
+    if(label && label.tagName==='LABEL') label.style.display='none';
+    el.style.display='none';
+    el.setAttribute('aria-hidden','true');
+    const sync=()=>{if(timestamp.value)el.value=timestamp.value.slice(0,10)};
+    timestamp.addEventListener('input',sync); timestamp.addEventListener('change',sync); sync();
+  }
+  const oldOpen=window.openModal;
+  window.openModal=function(type,data=null){
+    const r=oldOpen(type,data);
+    const special=['loan','loanRepayment','loanRepaymentEdit','split','repayment','repaymentEdit','moneyHeld'];
+    if(!special.includes(type))return r;
+    const f=$('f'); if(!f)return r;
+    const timestamp=f.elements.transaction_timestamp;
+    if(!timestamp)return r;
+    if(type==='loan') hideDateField(f,'loan_date',timestamp);
+    else if(type==='loanRepayment'||type==='loanRepaymentEdit') hideDateField(f,'repayment_date',timestamp);
+    else if(type==='split') hideDateField(f,'transaction_date',timestamp);
+    else if(type==='repayment'||type==='repaymentEdit') hideDateField(f,'reimbursement_date',timestamp);
+    else if(type==='moneyHeld') hideDateField(f,'received_date',timestamp);
+    return r;
+  };
+
+  // Ensure every special record's editable Recorded timestamp is persisted to created_at.
+  const oldSave=window.saveModal;
+  window.saveModal=async function(type,data,f){
+    const ts=f?.elements?.transaction_timestamp?.value;
+    const result=await oldSave(type,data,f);
+    if(!ts || !user || !sb)return result;
+    const iso=window.__mbTimestamp?.localDTToISO ? window.__mbTimestamp.localDTToISO(ts) : ts;
+    const now=new Date().toISOString();
+    try{
+      if(type==='split'){
+        const txId=result?.id || data?.transaction_id;
+        if(txId) await sb.from('transactions').update({created_at:iso,updated_at:now}).eq('id',txId).eq('user_id',user.id);
+        if(data?.id) await sb.from('split_transactions').update({created_at:iso,updated_at:now}).eq('id',data.id).eq('user_id',user.id);
+      } else if(type==='loan'){
+        const id=result?.id||data?.id;if(id)await sb.from('loans').update({created_at:iso,updated_at:now}).eq('id',id).eq('user_id',user.id);
+      } else if(type==='loanRepayment'||type==='loanRepaymentEdit'){
+        const id=result?.id||data?.id;if(id)await sb.from('loan_repayments').update({created_at:iso,updated_at:now}).eq('id',id).eq('user_id',user.id);
+      } else if(type==='moneyHeld'){
+        const id=result?.id||data?.id;if(id)await sb.from('money_held').update({created_at:iso,updated_at:now}).eq('id',id).eq('user_id',user.id);
+      } else if(type==='repayment'||type==='repaymentEdit'){
+        const id=result?.id||data?.id;if(id)await sb.from('transactions').update({created_at:iso,updated_at:now}).eq('id',id).eq('user_id',user.id);
+      }
+    }catch(e){console.warn('Recorded timestamp persistence skipped:',e)}
+    return result;
+  };
+
+  // Chronology helper: Recorded timestamp is the sole ordering key.
+  window.__recordedChronologyMs=function(t){
+    const raw=t?.created_at;
+    const ms=raw?Date.parse(raw):NaN;
+    if(Number.isFinite(ms))return ms;
+    const d=t?.transaction_date||t?.loan_date||t?.repayment_date||t?.received_date;
+    const fallback=d?Date.parse(String(d).slice(0,10)+'T00:00:00+05:30'):0;
+    return Number.isFinite(fallback)?fallback:0;
+  };
+
+  // Final ledger renderer: no separate Date field in entries; only Recorded + Updated.
+  const oldTxHTML=window.txHTML;
+  window.txHTML=function(t){
+    if(!t)return '';
+    // If an older record has no created_at, still display its legacy date as Recorded.
+    if(!t.created_at){
+      const d=t.transaction_date||t.loan_date||t.repayment_date||t.received_date;
+      if(d)t={...t,created_at:String(d).slice(0,10)+'T00:00:00+05:30'};
+    }
+    return oldTxHTML(t);
+  };
+})();
+
+
+/* ===== Shared Expense: Paid By / Someone Else support =====
+   Additive feature. A split can now be paid by the user or by another person.
+   If another person pays, the user's share is still counted in the selected
+   category/budget, but no bank account is reduced until the user repays them.
+*/
+(function(){
+  // Keep a small amount of UI state outside the existing split state.
+  window.__mbSplitPaidBy='__me__';
+
+  const prevOpenModal = window.openModal;
+  window.openModal = function(type, data=null){
+    const result = prevOpenModal(type, data);
+    if(type==='split'){
+      const f=$('f');
+      if(f){
+        const account=f.elements.account_id;
+        const anchor=account?.closest('label') || account?.parentElement?.previousElementSibling;
+        let paid=f.elements.paid_by_person_id;
+        if(!paid){
+          const wrap=document.createElement('div');
+          wrap.innerHTML=`<label>Paid by</label><select name="paid_by_person_id" id="splitPaidBy"><option value="__me__">Me</option>${state.people.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select><div class="notice" id="splitPaidByHelp">I paid this bill. The selected account will be reduced by the bill amount.</div>`;
+          const target=anchor || account?.parentElement || f.firstElementChild;
+          target?.parentNode?.insertBefore(wrap, target);
+          paid=f.elements.paid_by_person_id;
+        }
+        const paidValue=data?.paid_by_person_id || '__me__';
+        paid.value=paidValue;
+        window.__mbSplitPaidBy=paidValue;
+        const sync=()=>{
+          window.__mbSplitPaidBy=paid.value||'__me__';
+          const me=window.__mbSplitPaidBy==='__me__';
+          if(account){account.required=me;account.disabled=!me;if(!me)account.value='';}
+          const help=$('splitPaidByHelp');
+          if(help)help.textContent=me?'I paid this bill. The selected account will be reduced by the bill amount.':'Someone else paid this bill. My share still counts toward my budget, but my account is not reduced until I repay them.';
+          const prev=$('splitPreview');
+          if(prev){
+            const person=state.people.find(p=>p.id===window.__mbSplitPaidBy);
+            if(!me)prev.insertAdjacentHTML('afterbegin',`<div class="notice"><b>Payable to ${esc(person?.name||'person')}</b>: ${money(Number(splitRows.find(r=>r.isMe||r.person_id==='__me__')?.amount||0))}. Record the repayment later; it will not create another Outing expense.</div>`);
+          }
+        };
+        paid.addEventListener('change',sync);
+        sync();
+      }
+    }
+    return result;
+  };
+
+  const previousSaveModal=window.saveModal;
+  window.saveModal=async function(type,data,f){
+    if(type!=='split') return previousSaveModal(type,data,f);
+    const x=Object.fromEntries(new FormData(f).entries());
+    const total=Math.round(Number(x.total_amount||0)*100)/100;
+    if(!(total>0))throw new Error('Please enter a valid total bill amount.');
+    const me=splitRows.find(r=>r.isMe||r.person_id==='__me__');
+    const rows=splitRows.filter(r=>!(r.isMe||r.person_id==='__me__')&&r.person_id);
+    const paidBy=x.paid_by_person_id||'__me__';
+    const includeMe=splitIncludeMe!==false;
+    if(!me)throw new Error('Your share row is required.');
+    if(new Set(rows.map(r=>r.person_id)).size!==rows.length)throw new Error('Each person can appear only once.');
+    if(paidBy!=='__me__' && !state.people.some(p=>p.id===paidBy))throw new Error('Please select who paid the bill.');
+    if(paidBy==='__me__' && !x.account_id)throw new Error('Please select the account that paid the bill.');
+    if(splitMode==='equal'){
+      const participants=includeMe?(rows.length+1):rows.length;
+      if(!participants)throw new Error('Add at least one other person or include yourself.');
+      const cents=Math.round(total*100),base=Math.floor(cents/participants),remainder=cents-base*participants;let idx=0;
+      if(includeMe)me.amount=(base+(idx++<remainder?1:0))/100;else me.amount=0;
+      rows.forEach(r=>r.amount=(base+(idx++<remainder?1:0))/100);
+    }
+    const myShare=includeMe?Math.max(0,Math.round(Number(me.amount||0)*100)/100):0;
+    const sum=rows.reduce((a,r)=>a+Number(r.amount||0),0);
+    const combined=Math.round((myShare+sum)*100)/100;
+    if(Math.abs(total-combined)>.01)throw new Error(`Shares must add up to ${money(total)}.`);
+    const allocBase=paidBy==='__me__'?total:myShare;
+    if(allocBase<=0)throw new Error('Your share must be greater than ₹0 when someone else paid.');
+    const alloc=transactionCategoryData(allocBase,'expense');
+    let tx,st;
+    const txRow={amount:total,description:x.description||'',transaction_date:String(x.transaction_date).slice(0,10),account_id:paidBy==='__me__'?x.account_id:null,category_id:alloc[0]?.category_id||null,type:'split',notes:x.notes||null};
+    if(data){
+      tx=await update('transactions',data.transaction_id,txRow);
+      await update('split_transactions',data.id,{split_type:splitMode,total_amount:total,my_share:myShare,paid_by_person_id:paidBy});
+      await sb.from('split_participants').delete().eq('split_transaction_id',data.id);
+      st={id:data.id};
+    }else{
+      tx=await insert('transactions',txRow);
+      st=await insert('split_transactions',{transaction_id:tx.id,split_type:splitMode,total_amount:total,my_share:myShare,paid_by_person_id:paidBy});
+    }
+    for(const r of rows)await insert('split_participants',{split_transaction_id:st.id,person_id:r.person_id,amount:Number(r.amount),amount_paid:0,status:'pending'});
+    await saveTransactionCategoryRows(tx.id,alloc);
+    // A split paid by someone else has no transaction_accounts row. A split paid by me
+    // keeps the selected account allocation so account balances remain exact.
+    if(paidBy==='__me__')await saveTransactionAccountRows(tx.id,[{account_id:x.account_id,amount:total}]);
+    else await saveTransactionAccountRows(tx.id,[]);
+    const ts=f?.elements?.transaction_timestamp?.value;
+    if(ts&&user){const iso=window.__mbTimestamp?.localDTToISO?window.__mbTimestamp.localDTToISO(ts):ts;const now=new Date().toISOString();await sb.from('transactions').update({created_at:iso,updated_at:now}).eq('id',tx.id).eq('user_id',user.id);await sb.from('split_transactions').update({created_at:iso}).eq('id',st.id).eq('user_id',user.id)}
+    return tx;
+  };
+
+  // Reimbursement/settlement now supports both money received and money repaid.
+  const oldOpenModal2=window.openModal;
+  window.openModal=function(type,data=null){
+    const result=oldOpenModal2(type,data);
+    if(type==='repayment'||type==='repaymentEdit'){
+      const f=$('f');
+      if(f){
+        const amount=f.elements.amount;
+        const label=amount?.closest('label');
+        const account= f.elements.account_id;
+        const paidInLabel=account?.closest('label');
+        const wrap=document.createElement('div');
+        wrap.innerHTML=`<label>Settlement type</label><select name="reimbursement_direction" id="reimbursementDirection"><option value="received">Receive money from them</option><option value="sent">Repay money to them</option></select><div class="notice" id="reimbursementHelp">Receiving money reduces what they owe you.</div>`;
+        const target=label||paidInLabel||amount?.parentElement;
+        target?.parentNode?.insertBefore(wrap,target);
+        const dir=f.elements.reimbursement_direction;
+        dir.value=data?.reimbursement_direction || data?.reimbursement?.direction || 'received';
+        const sync=()=>{const sent=dir.value==='sent';if(label)label.textContent='Amount '+(sent?'repaid':'received');if(paidInLabel)paidInLabel.textContent='Account '+(sent?'paid from':'received into');const h=$('reimbursementHelp');if(h)h.textContent=sent?'This reduces what you owe them and reduces the selected account balance. It does not add another category expense.':'This reduces what they owe you and increases the selected account balance.'};
+        dir.addEventListener('change',sync);sync();
+      }
+    }
+    return result;
+  };
+
+  const previousSaveModal2=window.saveModal;
+  window.saveModal=async function(type,data,f){
+    if(type!=='repayment'&&type!=='repaymentEdit') return previousSaveModal2(type,data,f);
+    const x=Object.fromEntries(new FormData(f).entries()), direction=x.reimbursement_direction||'received', amount=Number(x.amount);
+    const p=state.people.find(q=>q.id===x.person_id);if(!p)throw new Error('Please select a person.');if(!(amount>0))throw new Error('Please enter a valid amount.');
+    const bal=peopleBalances().find(q=>q.id===x.person_id)||{};
+    const available=direction==='sent'?Number(bal.iOwe||0):Number(bal.balance||0);
+    if(amount>available+.01)throw new Error(`${direction==='sent'?'Repayment':'Receipt'} cannot exceed outstanding ${money(available)}.`);
+    const row={amount,description:direction==='sent'?`Repayment to ${p.name}`:`Reimbursement from ${p.name}`,transaction_date:x.reimbursement_date,account_id:x.account_id,type:'reimbursement',person_id:x.person_id,notes:x.notes||null,direction};
+    let tx,r;
+    if(type==='repaymentEdit'){
+      r=data.reimbursement;if(!r)throw new Error('Repayment record not found.');
+      tx=await update('transactions',data.id,row);
+      await update('reimbursements',r.id,{person_id:x.person_id,amount,reimbursement_date:x.reimbursement_date,account_id:x.account_id,notes:x.notes||null,direction});
+    }else{
+      tx=await insert('transactions',row);
+      r=await insert('reimbursements',{person_id:x.person_id,amount,reimbursement_date:x.reimbursement_date,account_id:x.account_id,transaction_id:tx.id,notes:x.notes||null,direction});
+    }
+    const ts=f?.elements?.transaction_timestamp?.value;if(ts&&user){const iso=window.__mbTimestamp?.localDTToISO?window.__mbTimestamp.localDTToISO(ts):ts;const now=new Date().toISOString();await sb.from('transactions').update({created_at:iso,updated_at:now}).eq('id',tx.id).eq('user_id',user.id)}
+    return tx;
+  };
+
+  // Final balance calculation: split liabilities are payable only when someone else paid.
+  function peopleBalances(){return state.people.map(p=>{
+    const sp=state.split_participants.filter(x=>x.person_id===p.id);
+    const splitGross=sp.reduce((s,x)=>s+Number(x.amount||0),0);
+    const splitOutstanding=sp.reduce((s,x)=>s+Math.max(0,Number(x.amount||0)-Number(x.amount_paid||0)),0);
+    const received=state.reimbursements.filter(x=>x.person_id===p.id&&x.direction!=='sent').reduce((s,x)=>s+Number(x.amount||0),0);
+    const sent=state.reimbursements.filter(x=>x.person_id===p.id&&x.direction==='sent').reduce((s,x)=>s+Number(x.amount||0),0);
+    const splitPayable=state.split_transactions.filter(st=>st.paid_by_person_id===p.id).reduce((s,st)=>s+Number(st.my_share||0),0);
+    const splitPayablePaid=state.split_transactions.filter(st=>st.paid_by_person_id===p.id).reduce((s,st)=>s,0);
+    const loanLent=state.loans.filter(x=>x.person_id===p.id&&x.direction==='lend').reduce((s,x)=>s+Number(x.amount||0),0);
+    const loanBorrowed=state.loans.filter(x=>x.person_id===p.id&&x.direction==='borrow').reduce((s,x)=>s+Number(x.amount||0),0);
+    const loanReceived=state.loan_repayments.filter(x=>x.person_id===p.id&&x.direction==='received').reduce((s,x)=>s+Number(x.amount||0),0);
+    const loanSent=state.loan_repayments.filter(x=>x.person_id===p.id&&x.direction==='sent').reduce((s,x)=>s+Number(x.amount||0),0);
+    const theyOwe=Math.max(0,splitOutstanding-received)+Math.max(0,loanLent-loanReceived);
+    const iOwe=Math.max(0,splitPayable-sent)+Math.max(0,loanBorrowed-loanSent);
+    return {...p,balance:theyOwe,iOwe,totalOwed:splitGross,totalRepaid:received,loanOwed:Math.max(0,loanLent-loanReceived),loanIowe:Math.max(0,loanBorrowed-loanSent),loanLent,loanReceived};
+  }).sort((a,b)=>(b.balance+b.iOwe)-(a.balance+a.iOwe));}
+
+  function accountBalance(a){let b=Number(a.opening_balance||0);for(const t of state.transactions){const n=Number(t.amount||0);if(t.type==='transfer'){if(t.account_id===a.id)b-=n;if(t.to_account_id===a.id)b+=n}else{const rows=txAccountIndex.get(t.id);const alloc=rows?rows.filter(x=>x.account_id===a.id).reduce((s,x)=>s+Number(x.amount||0),0):0;const used=alloc||((t.account_id===a.id)?n:0);if(t.type==='income')b+=used;if(t.type==='reimbursement')b+=t.direction==='sent'?-used:used;if(t.type==='expense'||t.type==='split')b-=used}}for(const l of state.loans){const n=Number(l.amount||0);if(l.account_id===a.id)b+=l.direction==='borrow'?n:-n}for(const r of state.loan_repayments){const n=Number(r.amount||0);if(r.account_id===a.id)b+=r.direction==='received'?n:-n}for(const h of state.money_held){if(h.account_id===a.id)b+=Math.max(0,Number(h.amount||0)-Number(h.settled_amount||0))}return b}
+
+  // Keep special split rows in the unified ledger descriptive when someone else paid.
+  const oldTxHTMLFinal=window.txHTML;
+  window.txHTML=function(t){
+    if(t?.type==='split'){
+      const st=state.split_transactions.find(s=>s.transaction_id===t.id);
+      if(st?.paid_by_person_id&&st.paid_by_person_id!=='__me__'){
+        const person=personName(st.paid_by_person_id);
+        const mine=Number(st.my_share||0);
+        t={...t,description:t.description||'Shared expense',account_id:null,__paidByOther:person,__myShare:mine};
+      }
+    }
+    if(t?.type==='reimbursement'&&t.direction==='sent') t={...t,__sent:true};
+    return oldTxHTMLFinal(t);
+  };
+})();
+/* ===== Unified user card sorting v3 ===== */
+(function(){
+ const KEY='mybudget_card_order_v3_';
+ const uk=()=>KEY+(window.user?.id||'local');
+ const load=k=>{try{const o=JSON.parse(localStorage.getItem(uk())||'{}');return Array.isArray(o[k])?o[k].map(String):[]}catch(e){return[]}};
+ const save=(k,ids)=>{try{const o=JSON.parse(localStorage.getItem(uk())||'{}');o[k]=ids.map(String);localStorage.setItem(uk(),JSON.stringify(o))}catch(e){}};
+ const rank=(k)=>new Map(load(k).map((id,i)=>[id,i]));
+ function decorate(k,root,ids,rerender){
+   if(!root)return;
+   const cards=[...root.querySelectorAll(':scope > .row')].filter(x=>!x.classList.contains('section-title-inline'));
+   if(!cards.length)return;
+   cards.forEach((el,i)=>{if(!el.dataset.sortId)el.dataset.sortId=String(ids[i]??i);el.classList.add('mb-user-sort-card')});
+   const r=rank(k);cards.sort((a,b)=>(r.has(a.dataset.sortId)?r.get(a.dataset.sortId):999999)-(r.has(b.dataset.sortId)?r.get(b.dataset.sortId):999999)).forEach(x=>root.appendChild(x));
+   const orderedCards=[...root.querySelectorAll(':scope > .mb-user-sort-card')];
+   orderedCards.forEach(el=>{
+     if(!el.querySelector('.mb-v3-handle')){
+       const h=document.createElement('span');h.className='mb-drag-handle mb-v3-handle';h.textContent='☷';h.title='Long press and drag';(el.querySelector('.left')||el).prepend(h);
+       const nav=document.createElement('span');nav.className='mb-sort-nav';nav.innerHTML='<button type="button" class="smallbtn">↑</button><button type="button" class="smallbtn">↓</button>';
+       const action=el.querySelector('.action-row')||el.lastElementChild||el;action.appendChild(nav);
+       nav.children[0].onclick=e=>{e.stopPropagation();move(k,el,-1,rerender)};
+       nav.children[1].onclick=e=>{e.stopPropagation();move(k,el,1,rerender)};
+       drag(k,el,rerender);
+     }
+   });
+ }
+ function move(k,el,d,rerender){
+   const root=el.parentElement,cards=[...root.querySelectorAll(':scope > .mb-user-sort-card')],i=cards.indexOf(el),j=i+d;
+   if(i<0||j<0||j>=cards.length)return;
+   if(d<0)root.insertBefore(el,cards[j]);else root.insertBefore(cards[j],el);
+   save(k,[...root.querySelectorAll(':scope > .mb-user-sort-card')].map(x=>x.dataset.sortId));rerender();
+ }
+ function drag(k,el,rerender){
+   let timer=null,active=false;
+   el.addEventListener('pointerdown',e=>{if(e.target.closest('button,input,select,textarea,a'))return;timer=setTimeout(()=>{active=true;el.classList.add('mb-dragging');try{el.setPointerCapture(e.pointerId)}catch(_){}},450)});
+   el.addEventListener('pointermove',e=>{if(!active)return;e.preventDefault();const root=el.parentElement,s=[...root.querySelectorAll(':scope > .mb-user-sort-card')].filter(x=>x!==el),b=s.find(x=>e.clientY<x.getBoundingClientRect().top+x.getBoundingClientRect().height/2);b?root.insertBefore(el,b):root.appendChild(el)});
+   const end=e=>{if(timer)clearTimeout(timer);if(!active)return;active=false;el.classList.remove('mb-dragging');try{el.releasePointerCapture(e.pointerId)}catch(_){}save(k,[...el.parentElement.querySelectorAll(':scope > .mb-user-sort-card')].map(x=>x.dataset.sortId));rerender()};
+   el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
+ }
+ function wrap(name,k,rootId,getIds){
+   const old=window[name];if(typeof old!=='function')return;
+   const wrapped=function(){old();const root=$(rootId);if(root)decorate(k,root,getIds(),wrapped)};
+   window[name]=wrapped;
+   try{eval(name+'=wrapped')}catch(_){}
+ }
+ /* Goals */
+ wrap('renderGoals','goals','goalList',()=>state.goals.map(x=>x.id));
+ /* Reminders: each status section remains separate. */
+ const oldRem=window.renderRemindersPage;
+ if(typeof oldRem==='function'){
+   window.renderRemindersPage=function(){oldRem();const root=$('remindersPageList');if(!root)return;
+     const cards=[...root.querySelectorAll(':scope > .row')],pending=state.reminders.filter(x=>!x.completed),completed=state.reminders.filter(x=>x.completed);
+     let pi=0,ci=0;cards.forEach(c=>{const text=c.textContent||'';c.dataset.sortId=String((text.includes('Completed')?completed[ci++]:pending[pi++])?.id||c.dataset.sortId||'')});
+     const titles=[...root.querySelectorAll(':scope > .section-title-inline')]; // decorate independently without moving headings
+     const groups=[]; let gi=0; titles.forEach((t,idx)=>{const arr=[];let n=t.nextElementSibling;while(n&& !n.classList.contains('section-title-inline')){arr.push(n);n=n.nextElementSibling}groups.push({title:t,cards:arr,key:idx?'reminders_completed':'reminders_pending'})});
+     groups.forEach(g=>{const r=rank(g.key);g.cards.sort((a,b)=>(r.has(a.dataset.sortId)?r.get(a.dataset.sortId):999999)-(r.has(b.dataset.sortId)?r.get(b.dataset.sortId):999999)).forEach(c=>g.title.after(c));g.cards.forEach(el=>{el.classList.add('mb-user-sort-card');if(!el.querySelector('.mb-v3-handle')){const h=document.createElement('span');h.className='mb-drag-handle mb-v3-handle';h.textContent='☷';(el.querySelector('.left')||el).prepend(h);const nav=document.createElement('span');nav.className='mb-sort-nav';nav.innerHTML='<button type="button" class="smallbtn">↑</button><button type="button" class="smallbtn">↓</button>';el.lastElementChild.appendChild(nav);nav.children[0].onclick=()=>move(g.key,el,-1,window.renderRemindersPage);nav.children[1].onclick=()=>move(g.key,el,1,window.renderRemindersPage);drag(g.key,el,window.renderRemindersPage)}})});
+   };
+   try{eval('renderRemindersPage=window.renderRemindersPage')}catch(_){}
+ }
+ /* Lend/Borrow */
+ wrap('renderLoans','loans','loanList',()=>state.people.map(p=>p.id));
+ /* Money held */
+ wrap('renderMoneyHeld','moneyHeld','moneyHeldList',()=>state.money_held.map(x=>x.id));
+ /* Split bills */
+ wrap('splitListHTML','split','splitList',()=>state.transactions.filter(x=>x.type==='split').map(x=>x.id));
+ /* Accounts & People already have native arrows; ensure their cards use the same drag affordance. */
+ const addStyle=document.createElement('style');addStyle.textContent=`
+ .mb-user-sort-card{position:relative}.mb-sort-nav{display:inline-flex;gap:4px;margin-left:6px;vertical-align:middle}.mb-sort-nav .smallbtn{min-width:30px}
+ .mb-drag-handle{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;margin-right:6px;color:var(--muted);font-size:20px;font-weight:900;cursor:grab;touch-action:none;user-select:none}.mb-dragging{opacity:.72;box-shadow:0 14px 35px rgba(0,0,0,.16);z-index:20}
+ @media(max-width:600px){.mb-drag-handle{width:34px;height:34px;font-size:22px}.mb-sort-nav .smallbtn{min-width:34px;min-height:34px}}
+ `;document.head.appendChild(addStyle);
+ /* Categories are edited in a modal; the parent/subcategory hierarchy is deliberately kept intact. */
+ window.mbMoveBudgetParent=function(id,d){
+ const root=$('budgetList');if(!root)return;const a=[...root.querySelectorAll(':scope > .mb-budget-parent')],i=a.findIndex(x=>String(x.dataset.sortId)===String(id)),j=i+d;if(i<0||j<0||j>=a.length)return;
+ if(d<0)root.insertBefore(a[i],a[j]);else root.insertBefore(a[j],a[i]);
+ budgetSortSave('parents',[...root.querySelectorAll(':scope > .mb-budget-parent')].map(x=>x.dataset.sortId));renderBudgets();
+};
+window.mbMoveBudgetSub=function(pid,id,d){
+ const root=document.querySelector(`.mb-budget-parent[data-sort-id="${CSS.escape(pid)}"] .budget-sub-list`);if(!root)return;const a=[...root.querySelectorAll(':scope > .mb-budget-sub')],i=a.findIndex(x=>String(x.dataset.sortId)===String(id)),j=i+d;if(i<0||j<0||j>=a.length)return;
+ if(d<0)root.insertBefore(a[i],a[j]);else root.insertBefore(a[j],a[i]);
+ budgetSortSave('parent_'+pid,[...root.querySelectorAll(':scope > .mb-budget-sub')].map(x=>x.dataset.sortId));renderBudgets();
+};
+function bindBudgetDrag(){
+ document.querySelectorAll('.mb-budget-parent').forEach(el=>{
+   if(el.dataset.bv3)return;el.dataset.bv3='1';let timer=null,active=false;
+   el.addEventListener('pointerdown',e=>{if(e.target.closest('button,input,select,textarea,a'))return;timer=setTimeout(()=>{active=true;el.classList.add('mb-dragging');try{el.setPointerCapture(e.pointerId)}catch(_){}},450)});
+   el.addEventListener('pointermove',e=>{if(!active)return;e.preventDefault();const root=el.parentElement,s=[...root.querySelectorAll(':scope > .mb-budget-parent')].filter(x=>x!==el),b=s.find(x=>e.clientY<x.getBoundingClientRect().top+x.getBoundingClientRect().height/2);b?root.insertBefore(el,b):root.appendChild(el)});
+   const end=e=>{if(timer)clearTimeout(timer);if(!active)return;active=false;el.classList.remove('mb-dragging');try{el.releasePointerCapture(e.pointerId)}catch(_){}budgetSortSave('parents',[...el.parentElement.querySelectorAll(':scope > .mb-budget-parent')].map(x=>x.dataset.sortId));renderBudgets()};
+   el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
+ });
+ document.querySelectorAll('.mb-budget-sub').forEach(el=>{
+   if(el.dataset.bv3)return;el.dataset.bv3='1';let timer=null,active=false;
+   el.addEventListener('pointerdown',e=>{if(e.target.closest('button,input,select,textarea,a'))return;timer=setTimeout(()=>{active=true;el.classList.add('mb-dragging')},450)});
+   el.addEventListener('pointermove',e=>{if(!active)return;e.preventDefault();const root=el.parentElement,s=[...root.querySelectorAll(':scope > .mb-budget-sub')].filter(x=>x!==el),b=s.find(x=>e.clientY<x.getBoundingClientRect().top+x.getBoundingClientRect().height/2);b?root.insertBefore(el,b):root.appendChild(el)});
+   const end=()=>{if(timer)clearTimeout(timer);if(!active)return;active=false;el.classList.remove('mb-dragging');const p=el.closest('.mb-budget-parent')?.dataset.sortId;if(p)budgetSortSave('parent_'+p,[...el.parentElement.querySelectorAll(':scope > .mb-budget-sub')].map(x=>x.dataset.sortId));renderBudgets()};
+   el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
+ });
+}
+const budgetObs=new MutationObserver(()=>{clearTimeout(window.__mbBudgetObs);window.__mbBudgetObs=setTimeout(bindBudgetDrag,30)});
+budgetObs.observe(document.body,{childList:true,subtree:true});
+setTimeout(bindBudgetDrag,100);
+window.mbCategoryMove=function(kind,id,parentId,d){
+ const root=kind==='parent'?document.querySelector('#mbCategoryParentList'):document.querySelector(`.mb-cat-sub-list[data-parent="${CSS.escape(parentId)}"]`);
+ if(!root)return;
+ const cards=kind==='parent'?[...root.querySelectorAll(':scope > .mb-cat-parent')]:[...root.querySelectorAll(':scope > .mb-cat-sub')];
+ const i=cards.findIndex(x=>String(x.dataset.sortId)===String(id)),j=i+d;if(i<0||j<0||j>=cards.length)return;
+ if(d<0)root.insertBefore(cards[i],cards[j]);else root.insertBefore(cards[j],cards[i]);
+ const k=kind==='parent'?'categories_parents':'categories_sub_'+parentId;
+ save(k,[...root.children].filter(x=>kind==='parent'?x.classList.contains('mb-cat-parent'):x.classList.contains('mb-cat-sub')).map(x=>x.dataset.sortId));
+};
+function bindCategoryDrag(){
+ const bindOne=(el,kind,parentId)=>{
+   if(el.dataset.catDrag)return;el.dataset.catDrag='1';let timer=null,active=false;
+   el.addEventListener('pointerdown',e=>{if(e.target.closest('button,input,select,textarea,a'))return;timer=setTimeout(()=>{active=true;el.classList.add('mb-dragging');try{el.setPointerCapture(e.pointerId)}catch(_){}},450)});
+   el.addEventListener('pointermove',e=>{if(!active)return;e.preventDefault();const root=kind==='parent'?document.querySelector('#mbCategoryParentList'):document.querySelector(`.mb-cat-sub-list[data-parent="${CSS.escape(parentId)}"]`);if(!root)return;const cards=(kind==='parent'?[...root.querySelectorAll(':scope > .mb-cat-parent')]:[...root.querySelectorAll(':scope > .mb-cat-sub')]).filter(x=>x!==el),b=cards.find(x=>e.clientY<x.getBoundingClientRect().top+x.getBoundingClientRect().height/2);b?root.insertBefore(el,b):root.appendChild(el)});
+   const end=e=>{if(timer)clearTimeout(timer);if(!active)return;active=false;el.classList.remove('mb-dragging');try{el.releasePointerCapture(e.pointerId)}catch(_){}const root=kind==='parent'?document.querySelector('#mbCategoryParentList'):document.querySelector(`.mb-cat-sub-list[data-parent="${CSS.escape(parentId)}"]`);if(root)save(kind==='parent'?'categories_parents':'categories_sub_'+parentId,[...root.children].filter(x=>kind==='parent'?x.classList.contains('mb-cat-parent'):x.classList.contains('mb-cat-sub')).map(x=>x.dataset.sortId))};
+   el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
+ };
+ document.querySelectorAll('.mb-cat-parent .mb-cat-handle').forEach(h=>bindOne(h.closest('.mb-cat-parent'),'parent',''));
+ document.querySelectorAll('.mb-cat-sub .mb-cat-sub-handle').forEach(h=>bindOne(h.closest('.mb-cat-sub'),'sub',h.closest('.mb-cat-sub-list')?.dataset.parent||''));
+}
+const catObs=new MutationObserver(()=>{clearTimeout(window.__mbCatObs);window.__mbCatObs=setTimeout(bindCategoryDrag,30)});
+catObs.observe(document.body,{childList:true,subtree:true});
+setTimeout(bindCategoryDrag,100);
+window.mbCategorySortSave=function(kind,id,d){
+   const root=kind==='parent'?document.querySelector('#modal .mb-cat-parent-list'):document.querySelector(`#modal .mb-cat-sub-list[data-parent="${CSS.escape(id)}"]`);
+   if(!root)return;const cards=[...root.children],i=cards.findIndex(x=>x.dataset.sortId===id),j=i+d;if(i<0||j<0||j>=cards.length)return;if(d<0)root.insertBefore(cards[i],cards[j]);else root.insertBefore(cards[j],cards[i]);save(kind==='parent'?'categories_parents':'categories_sub_'+id,[...root.children].map(x=>x.dataset.sortId));
+ };
+ setTimeout(()=>{try{renderGoals()}catch(_){}try{renderRemindersPage()}catch(_){}try{renderLoans()}catch(_){}try{renderMoneyHeld()}catch(_){}try{splitListHTML()}catch(_){}},100);
+})();
+/* ===== My Budget sorting v4: explicit, tab-safe card ordering ===== */
+(function(){
+  const K='mybudget_card_order_v4_';
+  const uid=()=>String(window.user?.id||'local');
+  const load=(k)=>{try{const o=JSON.parse(localStorage.getItem(K+uid())||'{}');return Array.isArray(o[k])?o[k].map(String):[]}catch(_){return[]}};
+  const save=(k,ids)=>{try{const o=JSON.parse(localStorage.getItem(K+uid())||'{}');o[k]=ids.map(String);localStorage.setItem(K+uid(),JSON.stringify(o))}catch(_){}};
+  const ordered=(els,k)=>{const r=new Map(load(k).map((id,i)=>[id,i]));return els.slice().sort((a,b)=>(r.has(String(a.dataset.sortId))?r.get(String(a.dataset.sortId)):999999)-(r.has(String(b.dataset.sortId))?r.get(String(b.dataset.sortId)):999999))};
+  const nav=(el,k,rerender)=>{
+    if(!el||el.querySelector('.mb-v4-sort-nav'))return;
+    let host=el.querySelector('.action-row')||el.lastElementChild||el;
+    const n=document.createElement('span');n.className='mb-sort-nav mb-v4-sort-nav';
+    n.innerHTML='<button type="button" class="smallbtn mb-v4-up" title="Move up">↑</button><button type="button" class="smallbtn mb-v4-down" title="Move down">↓</button>';
+    host.appendChild(n);
+    const move=d=>{
+      const root=el.parentElement, a=[...root.querySelectorAll(':scope > .mb-user-sort-card')],i=a.indexOf(el),j=i+d;
+      if(i<0||j<0||j>=a.length)return;
+      if(d<0)root.insertBefore(el,a[j]);else root.insertBefore(a[j],el);
+      save(k,[...root.querySelectorAll(':scope > .mb-user-sort-card')].map(x=>x.dataset.sortId));
+      rerender();
+    };
+    n.querySelector('.mb-v4-up').onclick=e=>{e.stopPropagation();move(-1)};
+    n.querySelector('.mb-v4-down').onclick=e=>{e.stopPropagation();move(1)};
+  };
+  const drag=(el,k,rerender)=>{
+    if(!el||el.dataset.mbV4Drag)return; el.dataset.mbV4Drag='1';
+    let timer=null,active=false;
+    el.addEventListener('pointerdown',e=>{
+      if(e.target.closest('button,input,select,textarea,a'))return;
+      timer=setTimeout(()=>{active=true;el.classList.add('mb-v4-dragging');try{el.setPointerCapture(e.pointerId)}catch(_){}},450);
+    });
+    el.addEventListener('pointermove',e=>{
+      if(!active)return;e.preventDefault();
+      const root=el.parentElement, others=[...root.querySelectorAll(':scope > .mb-user-sort-card')].filter(x=>x!==el);
+      const before=others.find(x=>e.clientY < x.getBoundingClientRect().top+x.getBoundingClientRect().height/2);
+      before?root.insertBefore(el,before):root.appendChild(el);
+    });
+    const end=e=>{
+      if(timer)clearTimeout(timer); if(!active)return; active=false;el.classList.remove('mb-v4-dragging');
+      try{el.releasePointerCapture(e.pointerId)}catch(_){}
+      save(k,[...el.parentElement.querySelectorAll(':scope > .mb-user-sort-card')].map(x=>x.dataset.sortId));rerender();
+    };
+    el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
+  };
+  function generic(k,selector,ids,rerender){
+    const root=document.querySelector(selector);if(!root)return;
+    let cards=[...root.querySelectorAll(':scope > .row')].filter(x=>!x.classList.contains('section-title-inline')&&!x.classList.contains('empty'));
+    if(!cards.length)return;
+    cards.forEach((el,i)=>{el.classList.add('mb-user-sort-card');if(!el.dataset.sortId)el.dataset.sortId=String(ids[i]??i)});
+    cards=ordered(cards,k);cards.forEach(x=>root.appendChild(x));
+    cards.forEach(el=>{
+      if(!el.querySelector('.mb-v4-handle')){
+        const h=document.createElement('span');h.className='mb-drag-handle mb-v4-handle';h.textContent='☷';h.title='Long press and drag';
+        (el.querySelector('.left')||el).prepend(h);
+      }
+      nav(el,k,rerender);drag(el,k,rerender);
+    });
+  }
+  function wrap(name,fn){const old=window[name];if(typeof old!=='function')return;window[name]=fn(old);try{eval(name+'=window.'+name)}catch(_){}}
+
+  /* Goals */
+  wrap('renderGoals',old=>function(){old();generic('goals','#goalList',state.goals.map(x=>x.id),window.renderGoals)});
+  /* Accounts and People: use their actual rendered IDs, then enforce visible v4 controls. */
+  wrap('renderAccounts',old=>function(){old();generic('accounts','#accountList',state.accounts.map(x=>x.id),window.renderAccounts)});
+  wrap('renderPeople',old=>function(){old();generic('people','#peopleList',state.people.map(x=>x.id),window.renderPeople)});
+  /* Lend/Borrow */
+  wrap('renderLoans',old=>function(){old();generic('loans','#loanList',state.people.map(x=>x.id),window.renderLoans)});
+  /* Money Held */
+  wrap('renderMoneyHeld',old=>function(){old();generic('moneyHeld','#moneyHeldList',state.money_held.map(x=>x.id),window.renderMoneyHeld)});
+  /* Split bills */
+  wrap('splitListHTML',old=>function(){old();generic('split','#splitList',state.transactions.filter(x=>x.type==='split').map(x=>x.id),window.splitListHTML)});
+
+  /* Reminders: keep Pending and Completed sections separate and sortable. */
+  wrap('renderRemindersPage',old=>function(){
+    old();const root=document.querySelector('#remindersPageList');if(!root)return;
+    const titles=[...root.querySelectorAll(':scope > .section-title-inline')];
+    titles.forEach((title,idx)=>{
+      const key=idx===0?'reminders_pending':'reminders_completed',cards=[];
+      let n=title.nextElementSibling;while(n&&!n.classList.contains('section-title-inline')){if(n.classList.contains('row'))cards.push(n);n=n.nextElementSibling}
+      cards.forEach((el,i)=>{el.classList.add('mb-user-sort-card');if(!el.dataset.sortId){const src=(idx===0?state.reminders.filter(x=>!x.completed):state.reminders.filter(x=>x.completed));el.dataset.sortId=String(src[i]?.id||i)}});
+      const r=new Map(load(key).map((id,i)=>[id,i]));cards.sort((a,b)=>(r.has(a.dataset.sortId)?r.get(a.dataset.sortId):999999)-(r.has(b.dataset.sortId)?r.get(b.dataset.sortId):999999));
+      cards.forEach(el=>title.after(el));
+      cards.forEach(el=>{if(!el.querySelector('.mb-v4-handle')){const h=document.createElement('span');h.className='mb-drag-handle mb-v4-handle';h.textContent='☷';(el.querySelector('.left')||el).prepend(h)}nav(el,key,window.renderRemindersPage);drag(el,key,window.renderRemindersPage)});
+    });
+  });
+
+  /* Budgets: explicit parent + child controls, with independent order keys. */
+  const budgetDecorate=()=>{
+    const root=document.querySelector('#budgetList');if(!root)return;
+    const parents=[...root.querySelectorAll(':scope > .mb-budget-parent')];
+    parents.forEach((p,i)=>{
+      if(!p.dataset.sortId)p.dataset.sortId='__parent_'+i;
+      if(!p.querySelector('.mb-v4-budget-parent-nav')){
+        const h=p.querySelector('.budget-parent-heading');if(h){
+          const n=document.createElement('span');n.className='mb-sort-nav mb-v4-sort-nav mb-v4-budget-parent-nav';
+          n.innerHTML='<button type="button" class="smallbtn">↑</button><button type="button" class="smallbtn">↓</button>';
+          h.appendChild(n);
+          const move=d=>{const a=[...root.querySelectorAll(':scope > .mb-budget-parent')],i=a.indexOf(p),j=i+d;if(i<0||j<0||j>=a.length)return;if(d<0)root.insertBefore(p,a[j]);else root.insertBefore(a[j],p);save('budgets_parents',a.map(x=>x.dataset.sortId));renderBudgets()};
+          n.children[0].onclick=e=>{e.stopPropagation();move(-1)};n.children[1].onclick=e=>{e.stopPropagation();move(1)};
+        }
+      }
+      const sub=p.querySelector(':scope > .budget-sub-list');if(!sub)return;
+      const cards=[...sub.querySelectorAll(':scope > .mb-budget-sub')];
+      cards.forEach((el,i)=>{
+        if(!el.dataset.sortId)el.dataset.sortId=String(i);
+        if(!el.querySelector('.mb-v4-budget-sub-nav')){
+          let host=el.querySelector('.budget-sub-sort')||el.lastElementChild||el;
+          const n=document.createElement('span');n.className='mb-sort-nav mb-v4-sort-nav mb-v4-budget-sub-nav';
+          n.innerHTML='<button type="button" class="smallbtn">↑</button><button type="button" class="smallbtn">↓</button>';
+          host.appendChild(n);
+          const pid=p.dataset.sortId;
+          const move=d=>{const a=[...sub.querySelectorAll(':scope > .mb-budget-sub')],i=a.indexOf(el),j=i+d;if(i<0||j<0||j>=a.length)return;if(d<0)sub.insertBefore(el,a[j]);else sub.insertBefore(a[j],el);save('budget_parent_'+pid,a.map(x=>x.dataset.sortId));renderBudgets()};
+          n.children[0].onclick=e=>{e.stopPropagation();move(-1)};n.children[1].onclick=e=>{e.stopPropagation();move(1)};
+        }
+      });
+    });
+    /* Do not alter the existing Budget rendering/calculation logic; only decorate/reorder DOM. */
+    const pr=new Map(load('budgets_parents').map((id,i)=>[id,i]));
+    parents.sort((a,b)=>(pr.has(a.dataset.sortId)?pr.get(a.dataset.sortId):999999)-(pr.has(b.dataset.sortId)?pr.get(b.dataset.sortId):999999));
+    parents.forEach(p=>root.appendChild(p));
+    parents.forEach(p=>{const sub=p.querySelector(':scope > .budget-sub-list');if(!sub)return;const r=new Map(load('budget_parent_'+p.dataset.sortId).map((id,i)=>[id,i]));[...sub.querySelectorAll(':scope > .mb-budget-sub')].sort((a,b)=>(r.has(a.dataset.sortId)?r.get(a.dataset.sortId):999999)-(r.has(b.dataset.sortId)?r.get(b.dataset.sortId):999999)).forEach(x=>sub.appendChild(x))});
+  };
+  wrap('renderBudgets',old=>function(){old();setTimeout(budgetDecorate,0)});
+
+  /* Categories: keep parent/subcategory hierarchy intact and add visible controls. */
+  const catDecorate=()=>{
+    const root=document.querySelector('#mbCategoryParentList');if(!root)return;
+    const parents=[...root.querySelectorAll(':scope > .mb-cat-parent')];
+    parents.forEach((p,i)=>{
+      if(!p.dataset.sortId)p.dataset.sortId=String(i);
+      const n=p.querySelector('.mb-sort-nav')||(()=>{const x=document.createElement('span');x.className='mb-sort-nav';x.innerHTML='<button type="button" class="smallbtn">↑</button><button type="button" class="smallbtn">↓</button>';return x})();
+      if(!n.parentElement){(p.querySelector('.left')||p).appendChild(n)}
+      n.children[0].onclick=e=>{e.stopPropagation();window.mbCategoryMove?.('parent',p.dataset.sortId,'',-1);catDecorate()};
+      n.children[1].onclick=e=>{e.stopPropagation();window.mbCategoryMove?.('parent',p.dataset.sortId,'',1);catDecorate()};
+      const sub=p.querySelector(':scope > .left .mb-cat-sub-list');if(!sub)return;
+      [...sub.querySelectorAll(':scope > .mb-cat-sub')].forEach((s,i)=>{
+        if(!s.dataset.sortId)s.dataset.sortId=String(i);
+        if(!s.querySelector('.mb-v4-cat-nav')){const x=document.createElement('span');x.className='mb-sort-nav mb-v4-cat-nav';x.innerHTML='<button type="button" class="smallbtn">↑</button><button type="button" class="smallbtn">↓</button>';s.appendChild(x);x.children[0].onclick=e=>{e.stopPropagation();window.mbCategoryMove?.('sub',s.dataset.sortId,p.dataset.sortId,-1);catDecorate()};x.children[1].onclick=e=>{e.stopPropagation();window.mbCategoryMove?.('sub',s.dataset.sortId,p.dataset.sortId,1);catDecorate()}}
+      });
+    });
+  };
+  const mo=new MutationObserver(()=>{clearTimeout(window.__mbSortV4);window.__mbSortV4=setTimeout(()=>{catDecorate();budgetDecorate()},50)});
+  mo.observe(document.body,{childList:true,subtree:true});
+
+  const style=document.createElement('style');style.textContent=`
+    .mb-v4-sort-nav{display:inline-flex!important;gap:4px!important;align-items:center!important;margin-left:8px!important}
+    .mb-v4-sort-nav .smallbtn,.mb-v4-cat-nav .smallbtn{display:inline-flex!important;visibility:visible!important;opacity:1!important;min-width:32px!important;min-height:32px!important;align-items:center!important;justify-content:center!important;cursor:pointer!important}
+    .mb-v4-handle{display:inline-flex!important;visibility:visible!important;opacity:1!important;align-items:center!important;justify-content:center!important;width:32px!important;height:32px!important;font-size:21px!important;cursor:grab!important;touch-action:none!important;user-select:none!important}
+    .mb-v4-dragging{opacity:.65!important;transform:scale(.995);z-index:50}
+    .mb-v4-budget-parent-nav{float:right}
+    .mb-v4-budget-sub-nav{margin-left:6px!important}
+    .mb-budget-parent{transition:opacity .12s,transform .12s}
+    @media(max-width:600px){.mb-v4-sort-nav .smallbtn,.mb-v4-cat-nav .smallbtn{min-width:36px!important;min-height:36px!important}.mb-v4-handle{width:36px!important;height:36px!important;font-size:23px!important}}
+  `;document.head.appendChild(style);
+
+  setTimeout(()=>{
+    try{window.renderBudgets?.()}catch(_){} try{window.renderPeople?.()}catch(_){} try{window.renderAccounts?.()}catch(_){}
+    try{window.renderGoals?.()}catch(_){} try{window.renderRemindersPage?.()}catch(_){} try{window.renderLoans?.()}catch(_){} try{window.renderMoneyHeld?.()}catch(_){} try{window.splitListHTML?.()}catch(_){} try{catDecorate()}catch(_){}
+  },150);
+})();
+
+
+/* ===================== Unified card sorting (v5) =====================
+   Adds a consistent "sort" control (drag handle + up/down arrows) to the
+   top-right corner of every card across Budgets, Goals, Accounts,
+   Reminders, People, Split bills, Lend/Borrow, Money Held and Categories.
+   This fully replaces earlier, partial sorting attempts so there is only
+   one consistent mechanism everywhere. */
+(function(){
+  const V5PREFIX='mybudget_sort_v5_';
+  const v5Key=k=>`${V5PREFIX}${(window.user&&window.user.id)||'local'}_${k}`;
+  function v5Load(k){try{return JSON.parse(localStorage.getItem(v5Key(k))||'[]')}catch(e){return[]}}
+  function v5Save(k,ids){try{localStorage.setItem(v5Key(k),JSON.stringify(ids.map(String)))}catch(e){}}
+  function v5Ordered(items,k){
+    const order=v5Load(k),rank=new Map(order.map((id,i)=>[id,i]));
+    return items.slice().sort((a,b)=>{
+      const ai=rank.has(String(a.id))?rank.get(String(a.id)):999999;
+      const bi=rank.has(String(b.id))?rank.get(String(b.id)):999999;
+      return ai-bi;
+    });
+  }
+  function v5Card(id,innerHTML,key,selector,renderFnName){
+    return `<div class="mb-v5-card" data-sort-id="${esc(String(id))}"><div class="mb-v5-nav"><span class="mb-v5-handle" title="Long press and drag">☷</span><button type="button" class="smallbtn mb-v5-btn" title="Move up" onclick="mbV5Move('${key}','${esc(String(id))}',-1,'${selector}','${renderFnName}')">↑</button><button type="button" class="smallbtn mb-v5-btn" title="Move down" onclick="mbV5Move('${key}','${esc(String(id))}',1,'${selector}','${renderFnName}')">↓</button></div>${innerHTML}</div>`;
+  }
+  window.mbV5Move=function(key,id,dir,selector,renderFnName){
+    const root=document.querySelector(selector);if(!root)return;
+    const cards=[...root.querySelectorAll(':scope > .mb-v5-card')];
+    const i=cards.findIndex(c=>c.dataset.sortId===String(id)),j=i+dir;
+    if(i<0||j<0||j>=cards.length)return;
+    if(dir<0)root.insertBefore(cards[i],cards[j]);else root.insertBefore(cards[j],cards[i]);
+    v5Save(key,[...root.querySelectorAll(':scope > .mb-v5-card')].map(c=>c.dataset.sortId));
+    const fn=window[renderFnName];if(typeof fn==='function')fn();
+  };
+  window.mbV5BindDrag=function(key,selector,renderFnName){
+    document.querySelectorAll(`${selector} > .mb-v5-card`).forEach(el=>{
+      if(el.dataset.mbV5Drag)return;el.dataset.mbV5Drag='1';
+      let timer=null,dragging=false;
+      el.addEventListener('pointerdown',e=>{
+        if(e.target.closest('button,input,select,textarea,a'))return;
+        timer=setTimeout(()=>{dragging=true;el.classList.add('mb-v5-dragging');try{el.setPointerCapture(e.pointerId)}catch(_){}},400);
+      });
+      el.addEventListener('pointermove',e=>{
+        if(!dragging)return;e.preventDefault();
+        const root=el.parentElement,others=[...root.querySelectorAll(':scope > .mb-v5-card')].filter(x=>x!==el);
+        const before=others.find(x=>e.clientY<x.getBoundingClientRect().top+x.getBoundingClientRect().height/2);
+        before?root.insertBefore(el,before):root.appendChild(el);
+      });
+      const end=e=>{
+        if(timer)clearTimeout(timer);if(!dragging)return;dragging=false;el.classList.remove('mb-v5-dragging');
+        try{el.releasePointerCapture(e.pointerId)}catch(_){}
+        const root=el.parentElement;
+        v5Save(key,[...root.querySelectorAll(':scope > .mb-v5-card')].map(x=>x.dataset.sortId));
+        const fn=window[renderFnName];if(typeof fn==='function')fn();
+      };
+      el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
+    });
+  };
+
+  const style=document.createElement('style');
+  style.textContent=`
+    .mb-v5-card{position:relative;padding-top:32px}
+    .mb-v5-nav{position:absolute;top:6px;right:8px;display:flex;align-items:center;gap:3px;z-index:3}
+    .mb-v5-btn{min-width:26px;min-height:26px;padding:0;display:inline-flex;align-items:center;justify-content:center;line-height:1}
+    .mb-v5-handle{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;font-size:17px;cursor:grab;user-select:none;touch-action:none;opacity:.55}
+    .mb-v5-dragging{opacity:.6;z-index:30}
+    .mb-v5-card>.row,.mb-v5-card>.goal-card,.mb-v5-card>.loan-person-card,.mb-v5-card>.person-card,.mb-v5-card>.card.account-card{margin-top:0}
+    .mb-v5-sub-card{position:relative;padding-top:28px}
+    .mb-v5-sub-card .mb-v5-nav{top:4px;right:6px}
+    @media(max-width:600px){.mb-v5-btn{min-width:30px;min-height:30px}.mb-v5-handle{width:28px;height:28px;font-size:19px}}
+  `;
+  document.head.appendChild(style);
+
+  /* ---------------- Goals ---------------- */
+  window.renderGoals=function(){
+    const el=document.getElementById('goalList');if(!el)return;
+    const items=v5Ordered(state.goals,'goals');
+    el.innerHTML=items.length?items.map(g=>v5Card(g.id,goalHTML(g),'goals','#goalList','renderGoals')).join(''):'<div class="empty">No goals yet.</div>';
+    window.mbV5BindDrag('goals','#goalList','renderGoals');
+  };
+
+  /* ---------------- Accounts (grouped by type, sortable within each group) ---------------- */
+  function mbAccountRowHTML(a){
+    const inc=state.transactions.filter(t=>t.account_id===a.id&&t.type==='income').reduce((s,t)=>s+Number(t.amount||0),0);
+    const spent=state.transactions.filter(t=>t.account_id===a.id&&(t.type==='expense'||t.type==='split')).reduce((s,t)=>s+Number(t.amount||0),0);
+    const bal=accountBalance(a);
+    return `<div class="card account-card"><div class="row"><div class="left"><div class="bubble">🏦</div><div><div class="name">${esc(a.name)}</div><div class="sub">${esc(a.currency||'INR')}</div></div></div><div class="action-row"><button class="smallbtn" onclick="editAccount('${a.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteAccount('${a.id}')">Delete</button></div></div><div class="account-metrics"><div><span>Income</span><b class="green">${money(inc)}</b></div><div><span>Spent</span><b class="red">${money(spent)}</b></div><div><span>Balance</span><b class="purple">${money(bal)}</b></div></div></div>`;
+  }
+  window.renderAccounts=function(){
+    const el=document.getElementById('accountList');if(!el)return;
+    const groups={};
+    state.accounts.forEach(a=>(groups[a.type||'other']??=[]).push(a));
+    const order=['bank','cash','credit_card','investment','investments','wallet','other'];
+    const keys=[...order.filter(k=>groups[k]),...Object.keys(groups).filter(k=>!order.includes(k))];
+    const label=k=>({bank:'Bank',cash:'Cash',credit_card:'Credit Card',investment:'Investments',investments:'Investments',wallet:'Wallet',other:'Other'}[k]||k.replace(/_/g,' '));
+    el.innerHTML=keys.map(k=>{
+      const sortKey='accounts_'+k,selector=`#acctgrp-${k}`;
+      const items=v5Ordered(groups[k],sortKey);
+      return `<div class="account-type-group"><div class="account-type-title">${esc(label(k))}</div><div id="acctgrp-${k}">${items.map(a=>v5Card(a.id,mbAccountRowHTML(a),sortKey,selector,'renderAccounts')).join('')}</div></div>`;
+    }).join('')||'<div class="empty">Add your first account.</div>';
+    keys.forEach(k=>window.mbV5BindDrag('accounts_'+k,`#acctgrp-${k}`,'renderAccounts'));
+  };
+
+  /* ---------------- Reminders (pending / completed, each sortable) ---------------- */
+  window.renderRemindersPage=function(){
+    const el=document.getElementById('remindersPageList');if(!el)return;
+    const pending=v5Ordered(state.reminders.filter(r=>!r.completed),'reminders_pending');
+    const completed=v5Ordered(state.reminders.filter(r=>r.completed),'reminders_completed');
+    el.innerHTML=`<div class="section-title-inline">Pending <span>${pending.length}</span></div><div id="remPendingList">${pending.map(r=>v5Card(r.id,reminderHTML(r),'reminders_pending','#remPendingList','renderRemindersPage')).join('')||'<div class="empty">No pending reminders.</div>'}</div><div class="section-title-inline">Completed <span>${completed.length}</span></div><div id="remCompletedList">${completed.map(r=>v5Card(r.id,reminderHTML(r),'reminders_completed','#remCompletedList','renderRemindersPage')).join('')||'<div class="empty">No completed reminders.</div>'}</div>`;
+    window.mbV5BindDrag('reminders_pending','#remPendingList','renderRemindersPage');
+    window.mbV5BindDrag('reminders_completed','#remCompletedList','renderRemindersPage');
+  };
+
+  /* ---------------- People: Contacts sort also reorders People overview ---------------- */
+  window.renderPeople=function(){
+    const ps=peopleBalances();
+    const splitPending=ps.reduce((s,p)=>s+Number(p.splitPending||0),0);
+    const splitSettled=ps.reduce((s,p)=>s+Number(p.splitSettled||0),0);
+    const heldPending=ps.reduce((s,p)=>s+Number(p.heldPending||0),0);
+    const heldSettled=ps.reduce((s,p)=>s+Number(p.heldSettled||0),0);
+    const lend=ps.reduce((s,p)=>s+Number(p.loanOwed||0),0);
+    const borrow=ps.reduce((s,p)=>s+Number(p.loanIowe||0),0);
+    const toReceive=splitPending+lend,toPay=borrow;
+    const ordered=v5Ordered(ps,'people');
+    if(document.getElementById('peopleSummary'))document.getElementById('peopleSummary').innerHTML=`<div class="people-summary-grid"><div><span>Split pending</span><b class="amber">${money(splitPending)}</b></div><div><span>Split settled</span><b class="green">${money(splitSettled)}</b></div><div><span>Money held</span><b class="amber">${money(heldPending)}</b></div><div><span>Held settled (total)</span><b class="green">${money(heldSettled)}</b></div><div><span>They owe you</span><b class="green">${money(lend)}</b></div><div><span>You owe</span><b class="red">${money(borrow)}</b></div><div><span>To receive</span><b class="green">${money(toReceive)}</b></div><div><span>To pay</span><b class="red">${money(toPay)}</b></div><div><span>Total people</span><b>${ps.length}</b></div></div>`;
+    const overviewEl=document.getElementById('peopleOverview');
+    if(overviewEl)overviewEl.innerHTML=ordered.length?ordered.map(p=>personHTML(p)).join(''):'<div class="empty">No people yet.</div>';
+    const listEl=document.getElementById('peopleList');
+    if(listEl){
+      listEl.innerHTML=ordered.length?ordered.map(p=>v5Card(p.id,`<div class="contact-row"><div class="left"><div class="bubble person">${otherPersonIcon()}</div><div><div class="name">${esc(p.name)}</div><div class="sub">${esc(p.phone||'')}${p.email?' · '+esc(p.email):''}</div></div></div><div class="action-row"><button class="smallbtn" onclick="editPerson('${p.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deletePerson('${p.id}')">Delete</button></div></div>`,'people','#peopleList','renderPeople')).join(''):'<div class="empty">No contacts yet.</div>';
+      window.mbV5BindDrag('people','#peopleList','renderPeople');
+    }
+  };
+
+  /* ---------------- Split bills ---------------- */
+  window.splitListHTML=function(){
+    const el=document.getElementById('splitList');if(!el)return;
+    const items=v5Ordered(state.transactions.filter(t=>t.type==='split'),'split');
+    el.innerHTML=items.length?items.map(t=>v5Card(t.id,txHTML(t),'split','#splitList','splitListHTML')).join(''):'<div class="empty">No split transactions yet.</div>';
+    window.mbV5BindDrag('split','#splitList','splitListHTML');
+  };
+
+  /* ---------------- Lend / Borrow ---------------- */
+  window.renderLoans=function(){
+    const bs=peopleBalances().filter(p=>p.loanLent||p.loanBorrowed||p.loanReceived||p.loanSent);
+    const summaryEl=document.getElementById('loansSummary');
+    if(summaryEl)summaryEl.innerHTML=`<div class="loan-kpis"><div><span>THEY OWE YOU</span><b class="green">${money(bs.reduce((s,p)=>s+p.loanOwed,0))}</b></div><div><span>YOU OWE</span><b class="red">${money(bs.reduce((s,p)=>s+p.loanIowe,0))}</b></div></div>`;
+    const el=document.getElementById('loanList');if(!el)return;
+    const ordered=v5Ordered(bs,'loans');
+    el.innerHTML=ordered.length?ordered.map(p=>{
+      const inner=`<div class="loan-person-card"><div class="name">${esc(p.name)}</div><div class="loan-direction-grid"><div><span class="label">LEND</span><b class="green">${money(p.loanLent)}</b><small>Received back ${money(p.loanReceived)} · Outstanding ${money(p.loanOwed)}</small><div class="loan-actions"><button class="smallbtn" onclick="openLoanRepayment('${p.id}','received')">Receive</button><button class="smallbtn" onclick="showLoanHistory('${p.id}')">History</button></div></div><div><span class="label">BORROW</span><b class="red">${money(p.loanBorrowed)}</b><small>Repaid ${money(p.loanSent)} · Outstanding ${money(p.loanIowe)}</small><div class="loan-actions"><button class="smallbtn" onclick="openLoanRepayment('${p.id}','sent')">Repay</button><button class="smallbtn" onclick="showLoanHistory('${p.id}')">History</button></div></div></div>${state.loans.filter(l=>l.person_id===p.id).map(l=>`<div class="loan-record"><span>${l.direction==='lend'?'LEND':'BORROW'} · ${money(l.amount)} · ${fmtDate(l.loan_date)}</span><span><button class="smallbtn" onclick="editLoan('${l.id}')">Edit loan</button><button class="smallbtn dangerbtn" onclick="deleteLoan('${l.id}')">Delete loan</button></span></div>`).join('')}</div>`;
+      return v5Card(p.id,inner,'loans','#loanList','renderLoans');
+    }).join(''):'<div class="empty">No lend or borrow records.</div>';
+    window.mbV5BindDrag('loans','#loanList','renderLoans');
+  };
+
+  /* ---------------- Money Held ---------------- */
+  window.renderMoneyHeld=function(){
+    const summaryEl=document.getElementById('moneyHeldSummary');
+    if(summaryEl)summaryEl.innerHTML=`<div class="loan-kpis"><div><span>HELD FOR OTHERS</span><b class="amber">${money(moneyHeldOutstanding())}</b></div><div><span>OPEN ITEMS</span><b>${state.money_held.filter(x=>x.status==='pending').length}</b></div></div>`;
+    const el=document.getElementById('moneyHeldList');if(!el)return;
+    const items=v5Ordered(state.money_held,'moneyHeld');
+    el.innerHTML=items.length?items.map(h=>v5Card(h.id,heldHTML(h),'moneyHeld','#moneyHeldList','renderMoneyHeld')).join(''):'<div class="empty">No money held for others.</div>';
+    window.mbV5BindDrag('moneyHeld','#moneyHeldList','renderMoneyHeld');
+  };
+
+  /* ---------------- Budgets (parent groups + items within, each independently sortable) ---------------- */
+  window.renderBudgets=function(){
+    const tabsEl=document.getElementById('budgetTabs');
+    if(tabsEl)tabsEl.innerHTML=['weekly','monthly','yearly'].map(p=>`<button class="${budgetPeriod===p?'active':''}" onclick="budgetPeriod='${p}';renderBudgets()">${p[0].toUpperCase()+p.slice(1)}</button>`).join('');
+    const now=todayDate(),cy=now.getFullYear(),cm=now.getMonth()+1;
+    const arr=state.budgets.filter(b=>b.period===budgetPeriod&&(!b.year||b.year===cy)&&(budgetPeriod!=='monthly'||!b.month||b.month===cm));
+    const listEl=document.getElementById('budgetList');if(!listEl)return;
+    if(!arr.length){listEl.innerHTML=`<div class="empty">No ${budgetPeriod} budgets yet.</div>`;return}
+    const groups=new Map();
+    arr.forEach(b=>{const c=b.category_id?state.categories.find(x=>x.id===b.category_id):null,root=c?rootCategory(c):null,id=root?.id||'__uncategorized__';if(!groups.has(id))groups.set(id,{root,items:[]});groups.get(id).items.push(b)});
+    const parentIds=[...groups.keys()];
+    const parentOrdered=v5Ordered(parentIds.map(id=>({id})),'budget_parents_'+budgetPeriod).map(x=>x.id);
+    listEl.innerHTML=parentOrdered.map(pid=>{
+      const g=groups.get(pid),name=g.root?`${esc(g.root.icon||'🏷️')} ${esc(g.root.name)}`:'Uncategorized';
+      const selector=`#budgrp-${pid.replace(/[^a-zA-Z0-9_-]/g,'')}`;
+      const subKey='budget_sub_'+pid;
+      const items=v5Ordered(g.items,subKey);
+      const inner=`<div class="budget-parent-heading"><b>${name}</b><span class="badge">${items.length}</span></div><div class="budget-sub-list" id="budgrp-${pid.replace(/[^a-zA-Z0-9_-]/g,'')}">${items.map(b=>{
+        const card=`<div class="mb-v5-sub-card" data-sort-id="${esc(b.id)}"><div class="mb-v5-nav"><span class="mb-v5-handle" title="Long press and drag">☷</span><button type="button" class="smallbtn mb-v5-btn" onclick="mbV5Move('${subKey}','${esc(b.id)}',-1,'${selector}','renderBudgets')">↑</button><button type="button" class="smallbtn mb-v5-btn" onclick="mbV5Move('${subKey}','${esc(b.id)}',1,'${selector}','renderBudgets')">↓</button></div>${budgetHTML(b)}</div>`;
+        return card;
+      }).join('')}</div>`;
+      return v5Card(pid,inner,'budget_parents_'+budgetPeriod,'#budgetList','renderBudgets');
+    }).join('');
+    parentOrdered.forEach(pid=>{
+      const sel=`#budgrp-${pid.replace(/[^a-zA-Z0-9_-]/g,'')}`;
+      window.mbV5BindDrag('budget_sub_'+pid,sel,'renderBudgets');
+    });
+    window.mbV5BindDrag('budget_parents_'+budgetPeriod,'#budgetList','renderBudgets');
+  };
+
+  /* ---------------- Categories ---------------- */
+  function mbCategoryModalHTML(){
+    const parents=v5Ordered(state.categories.filter(c=>!c.parent_id),'categories_parents');
+    const body=parents.map(p=>{
+      const subKey='categories_sub_'+p.id,selector=`#catgrp-${p.id.replace(/[^a-zA-Z0-9_-]/g,'')}`;
+      const subs=v5Ordered(state.categories.filter(c=>c.parent_id===p.id),subKey);
+      const subsHTML=subs.map(c=>`<div class="mb-v5-sub-card" data-sort-id="${esc(c.id)}"><div class="mb-v5-nav"><span class="mb-v5-handle" title="Long press and drag">☷</span><button type="button" class="smallbtn mb-v5-btn" onclick="mbV5Move('${subKey}','${esc(c.id)}',-1,'${selector}','mbRerenderCategoryModal')">↑</button><button type="button" class="smallbtn mb-v5-btn" onclick="mbV5Move('${subKey}','${esc(c.id)}',1,'${selector}','mbRerenderCategoryModal')">↓</button></div><div class="tree"><div><div class="name">↳ ${esc(c.name)}</div><div class="sub">${esc(c.type)} · subcategory</div></div><div class="action-row"><button type="button" class="smallbtn" onclick="editCategory('${c.id}')">Edit</button><button type="button" class="smallbtn dangerbtn" onclick="deleteCategory('${c.id}')">Delete</button></div></div></div>`).join('');
+      const inner=`<div class="left"><div class="bubble">${esc(p.icon||'🏷️')}</div><div><div class="name">${esc(p.name)}</div><div class="sub">${esc(p.type)} · parent</div><div id="catgrp-${p.id.replace(/[^a-zA-Z0-9_-]/g,'')}">${subsHTML}</div></div></div><div class="action-row"><button type="button" class="smallbtn" onclick="editCategory('${p.id}')">Edit</button><button type="button" class="smallbtn dangerbtn" onclick="deleteCategory('${p.id}')">Delete</button></div>`;
+      return v5Card(p.id,`<div class="row">${inner}</div>`,'categories_parents','#mbCategoryParentListV5','mbRerenderCategoryModal');
+    }).join('');
+    return `<h2>Categories</h2><form id="f"><label>Name</label><input name="name" required placeholder="Rent"><label>Type</label><select name="type" id="newCategoryType"><option value="expense">Expense</option><option value="income">Income</option><option value="both">Both (income & expense)</option></select><label>Parent category (optional)</label><div id="newCategoryParent">${categoryParentSelect('','expense')}</div><label>Icon</label><input name="icon" value="🏷️"><label>Color</label><input name="color" value="#7666cf"><button class="primary">Add category</button></form><div class="section"><h2>Existing categories</h2></div><div id="mbCategoryParentListV5">${body||'<div class="empty">No categories yet.</div>'}</div>`;
+  }
+  window.mbRerenderCategoryModal=function(){
+    openModalRaw(mbCategoryModalHTML());
+    const typeSel=document.getElementById('newCategoryType');
+    if(typeSel)typeSel.onchange=e=>{const pEl=document.getElementById('newCategoryParent');if(pEl)pEl.innerHTML=categoryParentSelect(' ',e.target.value).replace('value=" " selected','value=""')};
+    const f=document.getElementById('f');
+    if(f)f.onsubmit=async e=>{e.preventDefault();try{await submitForm('category',null,e.target)}catch(_){}};
+    window.mbV5BindDrag('categories_parents','#mbCategoryParentListV5','mbRerenderCategoryModal');
+    parentsForDrag().forEach(p=>window.mbV5BindDrag('categories_sub_'+p.id,`#catgrp-${p.id.replace(/[^a-zA-Z0-9_-]/g,'')}`,'mbRerenderCategoryModal'));
+  };
+  function parentsForDrag(){return state.categories.filter(c=>!c.parent_id)}
+  const _openModalV5=window.openModal;
+  window.openModal=function(type,data=null){
+    if(type==='category'){
+      window.mbRerenderCategoryModal();
+      return;
+    }
+    return _openModalV5(type,data);
+  };
+
+  /* Re-render currently visible lists once, so the new sort controls appear immediately. */
+  setTimeout(()=>{
+    try{window.renderGoals?.()}catch(_){}
+    try{window.renderAccounts?.()}catch(_){}
+    try{window.renderRemindersPage?.()}catch(_){}
+    try{window.renderPeople?.()}catch(_){}
+    try{window.splitListHTML?.()}catch(_){}
+    try{window.renderLoans?.()}catch(_){}
+    try{window.renderMoneyHeld?.()}catch(_){}
+    try{window.renderBudgets?.()}catch(_){}
+  },0);
 })();

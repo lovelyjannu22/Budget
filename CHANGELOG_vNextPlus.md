@@ -43,3 +43,24 @@
 - Added account-specific running balance after each recorded transaction.
 - Account filtering now includes transfers where the selected account is the destination (`to_account_id`).
 - Added updated_at triggers for loans and loan repayments.
+
+## Final performance + ledger hardening
+- Unified Transactions → All now always includes normal transactions, Split, Lend/Borrow, loan repayments, and Money Held records.
+- Every special ledger row has Edit/Delete actions (Money Held also has Settle/Undo where applicable).
+- Account balances are recalculated from the current in-memory ledger after CRUD operations, so edits/deletes immediately affect displayed amounts.
+- Split edits preserve amounts already repaid and reject reducing a participant's share below their paid amount.
+- Categories are grouped explicitly into Parent categories & subcategories, with standalone categories separated.
+- Login now renders after the critical data set loads and finishes secondary data in the background.
+- Create/Edit/Delete operations refresh only affected Supabase tables instead of reloading the entire database.
+- Added transaction count to the Transactions page.
+
+- Added Shared Expense "Paid by" support: Me or Someone Else; someone-else-paid expenses count toward the user share/budget without reducing a bank account until repayment. Settlements support Receive/Repay directions.
+
+
+## Sorting v3 validation/update
+- Added persistent card ordering controls (up/down + long-press drag) for Goals, Reminders (Pending/Completed independently), Lend & Borrow, Money Held, and Split Bills.
+- Preserved Accounts and People native sorting and immediate re-render behavior.
+- Restored/validated Budget parent and subcategory ordering controls and long-press drag.
+- Added parent/subcategory sorting controls to the Categories modal while preserving hierarchy.
+- Sorting order is stored per signed-in user/device in localStorage.
+- JavaScript syntax validated with Node.js.
