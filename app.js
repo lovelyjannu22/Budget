@@ -5,7 +5,7 @@ const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g
 const _loadedScripts={};
 function loadScriptOnce(src){if(_loadedScripts[src])return _loadedScripts[src];_loadedScripts[src]=new Promise((resolve,reject)=>{const s=document.createElement('script');s.src=src;s.onload=()=>resolve();s.onerror=()=>{delete _loadedScripts[src];reject(new Error('Failed to load '+src))};document.head.appendChild(s)});return _loadedScripts[src]}
 const istParts=()=>{const p=new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());return Object.fromEntries(p.filter(x=>x.type!=='literal').map(x=>[x.type,x.value]))};
-const localDate=d=>{if(typeof d==='string'&&/^\d{4}-\d{2}-\d{2}/.test(d))return d.slice(0,10);const x=d instanceof Date?d:new Date(d);return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(x)}; const today=()=>{const p=istParts();return `${p.year}-${p.month}-${p.day}`}; const ym=()=>today().slice(0,7), ymOf=(y,m)=>`${y}-${String(m+1).padStart(2,'0')}`, money=n=>'₹'+Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2}), uid=()=>crypto.randomUUID();
+const localDate=d=>{if(!d)return '';if(typeof d==='string'&&/^\d{4}-\d{2}-\d{2}/.test(d))return d.slice(0,10);const x=d instanceof Date?d:new Date(d);if(isNaN(x.getTime()))return '';return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(x)}; const today=()=>{const p=istParts();return `${p.year}-${p.month}-${p.day}`}; const ym=()=>today().slice(0,7), ymOf=(y,m)=>`${y}-${String(m+1).padStart(2,'0')}`, money=n=>'₹'+Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2}), uid=()=>crypto.randomUUID();
 let sb=null,user=null,filter='All',authMode='signin',budgetPeriod='monthly',calCursor=null,selectedDate=today(),recoveryHandled=false,dataReady=false;
 let txCategoryIndex=new Map(),txAccountIndex=new Map();
 function rebuildIndexes(){txCategoryIndex=new Map();for(const x of state.transaction_categories||[]){if(!txCategoryIndex.has(x.transaction_id))txCategoryIndex.set(x.transaction_id,[]);txCategoryIndex.get(x.transaction_id).push(x)}txAccountIndex=new Map();for(const x of state.transaction_accounts||[]){if(!txAccountIndex.has(x.transaction_id))txAccountIndex.set(x.transaction_id,[]);txAccountIndex.get(x.transaction_id).push(x)}}
@@ -152,7 +152,51 @@ function greeting(){
   return `Hello, Good ${part}${nickname ? ', ' + nickname : ''}`;
 }
 function render(){const m=ym(),inc=sumType('income',m),spent=personalSpendingBetween(m+'-01',today()),saved=inc-spent,nowLabel=new Intl.DateTimeFormat('en-IN',{day:'2-digit',month:'short',year:'numeric',timeZone:'Asia/Kolkata'}).format(new Date());$('monthLabel').textContent=new Intl.DateTimeFormat('en-IN',{day:'2-digit',month:'long',year:'numeric',timeZone:'Asia/Kolkata'}).format(new Date());['transactionsDate','accountsDate','budgetsDate','calendarDate','goalsDate','peopleDate','insightsDate','moreDate','recurringDate','loansDate'].forEach(id=>{if($(id))$(id).textContent=nowLabel});if($('greetingText'))$('greetingText').textContent=greeting();$('totalBalance').textContent=money(totalBalance());$('monthIncome').textContent=money(inc);$('monthSpent').textContent=money(spent);$('monthSaved').textContent=money(saved);renderHome();renderTransactions();renderAccounts();renderBudgets();renderCalendar();renderGoals();renderPeople();renderLoans();renderInsights();renderRecurring()}
-function budgetHTML(b){const s=budgetStatus(b),rem=Math.max(0,Number(b.amount)-s.used);return `<div class="row budget-row"><div class="budget-main"><div class="total-line"><span><b>${esc(b.name)}</b><div class="sub">${esc(budgetCategoryLabel(b))} · ${b.period}</div></span></div><div class="budget-progress-line"><div class="progress"><div class="bar ${s.cls}" style="width:${Math.min(100,s.pct)}%"></div></div><span class="badge status-${s.cls}">${s.pct.toFixed(0)}%</span></div><div class="budget-amounts"><span class="budget-amount budget-spent">Spent <b class="red">${money(s.used)}</b></span><span class="budget-amount budget-limit">Budget <b class="purple">${money(b.amount)}</b></span><span class="budget-amount budget-remaining ${rem>0?'':'budget-remaining-over'}">Remaining <b class="${rem>0?'green':'red'}">${money(rem)}</b></span></div></div><div class="action-row"><button class="smallbtn" onclick="editBudget('${b.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteBudget('${b.id}')">Delete</button></div></div>`}
+function budgetSplitDetails(b,a,z){
+  const splits=state.transactions.filter(t=>t.type==='split'&&t.transaction_date>=a&&t.transaction_date<=z);
+  let myShare=0, totalBill=0, paidByOther=0, paidByMe=0;
+  for(const t of splits){
+    const st=state.split_transactions.find(x=>x.transaction_id===t.id);
+    const mine=Number(st?.my_share||splitMyShare(t)||0);
+    if(!mine)continue;
+    const allocs=txAllocations(t);
+    const matched=allocs.filter(x=>categoryMatchesBudget(x.category_id,b.category_id));
+    if(!matched.length)continue;
+    const allocTotal=allocs.reduce((q,x)=>q+Number(x.amount||0),0);
+    const matchedTotal=matched.reduce((q,x)=>q+Number(x.amount||0),0);
+    let shareForBudget=matchedTotal;
+    let billForBudget=Number(t.amount||st?.total_amount||0);
+    if(allocTotal>0 && Math.abs(allocTotal-Number(t.amount||0))<.01){
+      shareForBudget=Number(t.amount||0)>0?matchedTotal*(mine/Number(t.amount||0)):0;
+    }else if(allocTotal>0 && matchedTotal>0 && Math.abs(allocTotal-mine)<.01){
+      shareForBudget=matchedTotal;
+      billForBudget=Number(t.amount||st?.total_amount||0)>0?matchedTotal*(Number(t.amount||st?.total_amount||0)/mine):matchedTotal;
+    }
+    myShare+=shareForBudget;
+    totalBill+=billForBudget;
+    const payer=(typeof window.splitPayerForSplit==='function'?window.splitPayerForSplit(st):(t.person_id||'__me__'));
+    if(payer==='__me__')paidByMe+=shareForBudget;else paidByOther+=shareForBudget;
+  }
+  return {count:splits.filter(t=>{const st=state.split_transactions.find(x=>x.transaction_id===t.id);const mine=Number(st?.my_share||splitMyShare(t)||0);return mine>0&&txAllocations(t).some(x=>categoryMatchesBudget(x.category_id,b.category_id))}).length,myShare,totalBill,paidByOther,paidByMe};
+}
+function budgetHTML(b){
+  const s=budgetStatus(b),rem=Math.max(0,Number(b.amount)-s.used),[a,z]=periodRange(b.period,b);
+  const d=budgetSplitDetails(b,a,z);
+  const before=Math.max(0,s.used-d.myShare),after=s.used;
+  const splitBlock=d.count?`<div class="budget-split-details">
+    <div class="budget-split-title">🔀 Split details <span class="badge">${d.count}</span></div>
+    <div class="budget-split-grid">
+      <div><span>Split bill total</span><b>${money(d.totalBill)}</b></div>
+      <div><span>Your share</span><b class="purple">${money(d.myShare)}</b></div>
+      <div><span>Paid by you</span><b>${money(d.paidByMe)}</b></div>
+      <div><span>Paid by others</span><b class="red">${money(d.paidByOther)}</b></div>
+      <div><span>Spent before split</span><b>${money(before)}</b></div>
+      <div><span>Spent after split</span><b class="red">${money(after)}</b></div>
+    </div>
+    <div class="budget-split-note">Only your share counts toward this budget. If someone else paid, your account is not reduced until you repay them.</div>
+  </div>`:'';
+  return `<div class="row budget-row"><div class="budget-main"><div class="total-line"><span><b>${esc(b.name)}</b><div class="sub">${esc(budgetCategoryLabel(b))} · ${b.period}</div></span></div><div class="budget-progress-line"><div class="progress"><div class="bar ${s.cls}" style="width:${Math.min(100,s.pct)}%"></div></div><span class="badge status-${s.cls}">${s.pct.toFixed(0)}%</span></div><div class="budget-amounts"><span class="budget-amount budget-spent">Spent <b class="red">${money(s.used)}</b></span><span class="budget-amount budget-limit">Budget <b class="purple">${money(b.amount)}</b></span><span class="budget-amount budget-remaining ${rem>0?'':'budget-remaining-over'}">Remaining <b class="${rem>0?'green':'red'}">${money(rem)}</b></span></div>${splitBlock}</div><div class="action-row"><button class="smallbtn" onclick="editBudget('${b.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteBudget('${b.id}')">Delete</button></div></div>`;
+}
 function renderHome(){const now=todayDate(),b=state.budgets.find(x=>x.period==='monthly'&&(!x.year||x.year===now.getFullYear())&&(!x.month||x.month===now.getMonth()+1));$('homeBudget').innerHTML=b?budgetHTML(b):'<div class="empty">No monthly budget yet.</div>';const gs=state.goals.slice().sort((a,b)=>Number(b.is_completed)-Number(a.is_completed)).slice(0,1);$('homeGoals').innerHTML=gs.length?gs.map(goalHTML).join(''):'<div class="empty">No goals yet.</div>';const ps=peopleBalances().filter(x=>x.balance>0).slice(0,3);$('homePeople').innerHTML=ps.length?ps.map(personHTML).join(''):'<div class="empty">Nobody owes you right now.</div>';const rs=state.reminders.slice().sort((a,b)=>Number(Boolean(a.completed))-Number(Boolean(b.completed))||String(a.due_date).slice(0,10).localeCompare(String(b.due_date).slice(0,10)));$('homeReminders').innerHTML=rs.length?rs.map(reminderHTML).join(''):'<div class="empty">No reminders.</div>';const tx=state.transactions.slice().sort((a,b)=>String(b.transaction_date).slice(0,10).localeCompare(String(a.transaction_date).slice(0,10))||String(b.created_at||'').localeCompare(String(a.created_at||''))).slice(0,5);$('homeRecent').innerHTML=tx.length?tx.map(txHTML).join(''):'<div class="empty">No transactions yet.</div>'}
 
 function renderTransactions(){const types=['All','income','expense','transfer','split','reimbursement'];$('filters').innerHTML=types.map(x=>`<button class="chip ${filter===x?'active':''}" onclick="filter='${x}';renderTransactions()">${x==='All'?'All':x[0].toUpperCase()+x.slice(1)}</button>`).join('');let arr=state.transactions.slice().sort((a,b)=>String(b.transaction_date).localeCompare(String(a.transaction_date))||String(b.created_at||'').localeCompare(String(a.created_at||'')));if(filter!=='All')arr=arr.filter(t=>t.type===filter);$('txList').innerHTML=arr.length?arr.map(txHTML).join(''):'<div class="empty">No transactions found.</div>'}
@@ -167,7 +211,7 @@ function renderAccounts(){const items=mbOrdered(state.accounts,'accounts');const
 function budgetSortLoad(key){try{const k=`mybudget_budget_sort_v2_${user?.id||'local'}`;return JSON.parse(localStorage.getItem(k)||'{}')[key]||[]}catch(e){return []}}
 function budgetSortSave(key,ids){try{const k=`mybudget_budget_sort_v2_${user?.id||'local'}`;const o=JSON.parse(localStorage.getItem(k)||'{}');o[key]=ids;localStorage.setItem(k,JSON.stringify(o))}catch(e){}}
 function sortBudgetItems(items,key){const o=budgetSortLoad(key),r=new Map(o.map((id,i)=>[id,i]));return items.slice().sort((a,b)=>(r.has(a.id)?r.get(a.id):999999)-(r.has(b.id)?r.get(b.id):999999))}
-function renderBudgets(){$('budgetTabs').innerHTML=['weekly','monthly','yearly'].map(p=>`<button class="${budgetPeriod===p?'active':''}" onclick="budgetPeriod='${p}';renderBudgets()">${p[0].toUpperCase()+p.slice(1)}</button>`).join('');const now=todayDate(),cy=now.getFullYear(),cm=now.getMonth()+1;const arr=state.budgets.filter(b=>b.period===budgetPeriod&&(!b.year||b.year===cy)&&(budgetPeriod!=='monthly'||!b.month||b.month===cm));if(!arr.length){$('budgetList').innerHTML=`<div class="empty">No ${budgetPeriod} budgets yet.</div>`;return}const groups=new Map();arr.forEach(b=>{const c=b.category_id?state.categories.find(x=>x.id===b.category_id):null,root=c?rootCategory(c):null,id=root?.id||'__uncategorized__';if(!groups.has(id))groups.set(id,{root,items:[]});groups.get(id).items.push(b)});const po=budgetSortLoad('parents'),pr=new Map(po.map((id,i)=>[id,i]));const gs=[...groups.values()].sort((a,b)=>{const ai=a.root?.id||'__uncategorized__',bi=b.root?.id||'__uncategorized__';return (pr.has(ai)?pr.get(ai):999999)-(pr.has(bi)?pr.get(bi):999999)||(a.root?.name||'').localeCompare(b.root?.name||'')});$('budgetList').innerHTML=gs.map(g=>{const pid=g.root?.id||'__uncategorized__',name=g.root?`${esc(g.root.icon||'🏷️')} ${esc(g.root.name)}`:'Uncategorized',items=sortBudgetItems(g.items,'parent_'+pid);return `<div class="budget-parent-group mb-budget-parent" data-sort-id="${esc(pid)}"><div class="budget-parent-heading"><div><span class="mb-drag-handle">☷</span><b>${name}</b><span class="badge">${items.length}</span></div><span class="mb-sort-nav"><button type="button" class="smallbtn" onclick="mbMoveBudgetParent('${esc(pid)}',-1)">↑</button><button type="button" class="smallbtn" onclick="mbMoveBudgetParent('${esc(pid)}',1)">↓</button></span></div><div class="budget-sub-list">${items.map(b=>`<div class="mb-budget-sub" data-sort-id="${esc(b.id)}">${budgetHTML(b)}<div class="budget-sub-sort"><span class="mb-drag-handle">☷</span><button type="button" class="smallbtn" onclick="mbMoveBudgetSub('${esc(pid)}','${esc(b.id)}',-1)">↑</button><button type="button" class="smallbtn" onclick="mbMoveBudgetSub('${esc(pid)}','${esc(b.id)}',1)">↓</button></div></div>`).join('')}</div></div>`}).join('')}
+function renderBudgets(){$('budgetTabs').innerHTML=['weekly','monthly','yearly'].map(p=>`<button class="${budgetPeriod===p?'active':''}" onclick="budgetPeriod='${p}';renderBudgets()">${p[0].toUpperCase()+p.slice(1)}</button>`).join('');const now=todayDate(),cy=now.getFullYear(),cm=now.getMonth()+1;const arr=state.budgets.filter(b=>b.period===budgetPeriod&&(!b.year||b.year===cy)&&(budgetPeriod!=='monthly'||!b.month||b.month===cm));if(!arr.length){$('budgetList').innerHTML=`<div class="empty">No ${budgetPeriod} budgets yet.</div>`;return}const groups=new Map();arr.forEach(b=>{const c=b.category_id?state.categories.find(x=>x.id===b.category_id):null,root=c?rootCategory(c):null,id=root?.id||'__uncategorized__';if(!groups.has(id))groups.set(id,{root,items:[]});groups.get(id).items.push(b)});const po=budgetSortLoad('parents'),pr=new Map(po.map((id,i)=>[id,i]));const gs=[...groups.values()].sort((a,b)=>{const ai=a.root?.id||'__uncategorized__',bi=b.root?.id||'__uncategorized__';return (pr.has(ai)?pr.get(ai):999999)-(pr.has(bi)?pr.get(bi):999999)||(a.root?.name||'').localeCompare(b.root?.name||'')});$('budgetList').innerHTML=gs.map(g=>{const pid=g.root?.id||'__uncategorized__',name=g.root?`${esc(g.root.icon||'🏷️')} ${esc(g.root.name)}`:'Uncategorized',items=sortBudgetItems(g.items,'parent_'+pid);return `<div class="budget-parent-group mb-budget-parent" data-sort-id="${esc(pid)}"><div class="budget-parent-heading"><div><span class="mb-drag-handle">☷</span><b>${name}</b><span class="badge">${items.length}</span></div><span class="mb-sort-nav"><button type="button" class="smallbtn" data-budget-parent-dir="-1">↑</button><button type="button" class="smallbtn" data-budget-parent-dir="1">↓</button></span></div><div class="budget-sub-list">${items.map(b=>`<div class="mb-budget-sub" data-sort-id="${esc(b.id)}">${budgetHTML(b)}<div class="budget-sub-sort"><span class="mb-drag-handle">☷</span><button type="button" class="smallbtn" data-budget-sub-parent="${esc(pid)}" data-budget-sub-dir="-1">↑</button><button type="button" class="smallbtn" data-budget-sub-parent="${esc(pid)}" data-budget-sub-dir="1">↓</button></div></div>`).join('')}</div></div>`}).join('')}
 function goalMonthlyNeed(g){const target=Number(g.target_amount||0),saved=Number(g.saved_amount||0),remain=Math.max(0,target-saved),months=Math.max(0,Number(g.duration_months||0));return months?remain/months:0}
 function goalETA(g){const saved=Number(g.saved_amount||0),target=Number(g.target_amount||0),remain=Math.max(0,target-saved);if(remain<=0)return 'Completed';const months=[];for(let i=0;i<6;i++){const d=todayDate();d.setMonth(d.getMonth()-i);const p=localDate(d).slice(0,7);const end=localDate(new Date(d.getFullYear(),d.getMonth()+1,0));months.push(Math.max(0,sumType('income',p)-personalSpendingBetween(p+'-01',end)))}const avg=months.reduce((a,b)=>a+b,0)/(months.length||1);if(avg<=0)return 'Need a positive savings rate';const n=Math.ceil(remain/avg);return `At avg savings ${money(avg)}/mo · about ${n} month${n===1?'':'s'}`}
 function goalHTML(g){const target=Number(g.target_amount||0),saved=Number(g.saved_amount||0),pct=Math.min(100,target?saved/target*100:0),months=Math.max(1,Number(g.duration_months||remainingMonthsThisYear())),need=target>saved?Math.max(0,target-saved)/months:0;return `<div class="row"><div class="left"><div class="bubble goal">${esc(g.icon||'🎯')}</div><div style="min-width:0;flex:1"><div class="name">${esc(g.name)}</div><div class="sub">${money(saved)} of ${money(target)} · ${goalETA(g)}</div><div class="goal-plan"><span>Plan: </span><input class="goal-month-input" id="goalMonths_${g.id}" type="number" min="1" step="1" value="${months}" aria-label="Months to reach ${esc(g.name)}"><button type="button" class="smallbtn goal-save-months" onclick="saveGoalDuration('${g.id}')">Save</button><span> · save <b>${money(need)}</b>/month</span></div><div class="progress"><div class="bar ${pct>=100?'full':pct>=50?'mid':'low'}" style="width:${pct}%"></div></div></div></div><div><button class="smallbtn" onclick="contribute('${g.id}')">＋ Add</button><br><button class="smallbtn" onclick="showGoalContrib('${g.id}')">History</button> <button class="smallbtn" onclick="editGoal('${g.id}')">✎</button> <button class="smallbtn" onclick="deleteGoal('${g.id}')">🗑</button></div></div>`}
@@ -491,9 +535,14 @@ function categoryMatchesBudget(txCategoryId,budgetCategoryId){
 }
 function budgetStatusForRange(b,a,z){
   const used=state.transactions.filter(t=>t.transaction_date>=a&&t.transaction_date<=z&&(t.type==='expense'||t.type==='split')).reduce((sum,t)=>sum+txAllocations(t).filter(x=>categoryMatchesBudget(x.category_id,b.category_id)).reduce((sub,x)=>{
+    // Split category allocations created by the payer-aware flow already contain
+    // the user's share. Do not scale them a second time by myShare/total.
+    // Legacy split rows may still contain the full bill in transaction_categories;
+    // retain proportional allocation for those rows.
     if(t.type!=='split')return sub+Number(x.amount||0);
-    const total=Number(t.amount||0),mine=spending(t);
-    return sub+(total>0?Number(x.amount||0)*(mine/total):0);
+    const total=Number(t.amount||0),mine=spending(t),allocTotal=txAllocations(t).reduce((q,r)=>q+Number(r.amount||0),0);
+    if(allocTotal>0 && Math.abs(allocTotal-total)<.01 && total>0)return sub+Number(x.amount||0)*(mine/total);
+    return sub+Number(x.amount||0);
   },0),0);
   const amount=Number(b.amount||0);
   return {used,pct:amount>0?used/amount*100:0,cls:used>amount?'over':used>=amount*.8?'near':'good'};
@@ -511,7 +560,7 @@ function subcategoryOptions(type,parent,value=''){if(!parent)return '<option val
 let transactionCategoryMode='single',transactionCategoryRows=[];
 function categoryFields(type,data=null){const alloc=state.transaction_categories.filter(x=>x.transaction_id===data?.id);transactionCategoryMode=alloc.length>1?'multiple':'single';const first=alloc[0]||{category_id:data?.category_id||''};const rr=first.category_id?rootCategory(state.categories.find(c=>c.id===first.category_id)):null;transactionCategoryRows=alloc.length?alloc.map(x=>{const root=rootCategory(state.categories.find(c=>c.id===x.category_id));return {parent_id:root?.id||'',category_id:x.category_id,amount:Number(x.amount||0)}}):[{parent_id:rr?.id||'',category_id:first.category_id||'',amount:Number(data?.amount||0)}];return `<div class="field-block"><label>Category allocation</label><div class="mode"><button type="button" id="catSingle" class="${transactionCategoryMode==='single'?'selected':''}" onclick="setTransactionCategoryMode('single','${type}')">Single category</button><button type="button" id="catMultiple" class="${transactionCategoryMode==='multiple'?'selected':''}" onclick="setTransactionCategoryMode('multiple','${type}')">Multiple categories</button></div><div id="categoryAllocation"></div></div>`}
 function setTransactionCategoryMode(mode,type){transactionCategoryMode=mode;if(mode==='multiple'&&!transactionCategoryRows.length)transactionCategoryRows=[{parent_id:'',category_id:'',amount:0},{parent_id:'',category_id:'',amount:0}];renderTransactionCategoryRows(type)}
-function renderTransactionCategoryRows(type){const el=$('categoryAllocation');if(!el)return;$('catSingle')?.classList.toggle('selected',transactionCategoryMode==='single');$('catMultiple')?.classList.toggle('selected',transactionCategoryMode==='multiple');if(transactionCategoryMode==='single'){const r=transactionCategoryRows[0]||{parent_id:'',category_id:''};el.innerHTML=`<div class="category-grid"><div><label>Category</label><select name="parent_category_id" onchange="transactionCategoryRows[0].parent_id=this.value;transactionCategoryRows[0].category_id='';renderTransactionCategoryRows('${type}')">${parentCategoryOptions(type,r.parent_id)}</select></div><div><label>Subcategory</label><select name="category_id" onchange="transactionCategoryRows[0].category_id=this.value">${subcategoryOptions(type,r.parent_id,r.category_id)}</select></div></div>`}else{el.innerHTML=transactionCategoryRows.map((r,i)=>`<div class="category-grid allocation-row"><div><label>Category</label><select onchange="transactionCategoryRows[${i}].parent_id=this.value;transactionCategoryRows[${i}].category_id='';renderTransactionCategoryRows('${type}')">${parentCategoryOptions(type,r.parent_id)}</select></div><div><label>Subcategory</label><select onchange="transactionCategoryRows[${i}].category_id=this.value">${subcategoryOptions(type,r.parent_id,r.category_id)}</select></div><input class="allocation-amount" type="number" min="0" step="0.01" value="${r.amount||''}" placeholder="Amount" oninput="transactionCategoryRows[${i}].amount=Number(this.value)||0"></div>`).join('')+`<button type="button" class="secondary" onclick="transactionCategoryRows.push({parent_id:'',category_id:'',amount:0});renderTransactionCategoryRows('${type}')">＋ Add category</button>`}}
+function renderTransactionCategoryRows(type){const el=$('categoryAllocation');if(!el)return;$('catSingle')?.classList.toggle('selected',transactionCategoryMode==='single');$('catMultiple')?.classList.toggle('selected',transactionCategoryMode==='multiple');if(transactionCategoryMode==='single'){const r=transactionCategoryRows[0]||{parent_id:'',category_id:''};el.innerHTML=`<div class="category-grid"><div><label>Category</label><select name="parent_category_id" onchange="transactionCategoryRows[0].parent_id=this.value;transactionCategoryRows[0].category_id=this.value;renderTransactionCategoryRows('${type}')">${parentCategoryOptions(type,r.parent_id)}</select></div><div><label>Subcategory</label><select name="category_id" onchange="transactionCategoryRows[0].category_id=this.value">${subcategoryOptions(type,r.parent_id,r.category_id)}</select></div></div>`}else{el.innerHTML=transactionCategoryRows.map((r,i)=>`<div class="category-grid allocation-row"><div><label>Category</label><select onchange="transactionCategoryRows[${i}].parent_id=this.value;transactionCategoryRows[${i}].category_id=this.value;renderTransactionCategoryRows('${type}')">${parentCategoryOptions(type,r.parent_id)}</select></div><div><label>Subcategory</label><select onchange="transactionCategoryRows[${i}].category_id=this.value">${subcategoryOptions(type,r.parent_id,r.category_id)}</select></div><input class="allocation-amount" type="number" min="0" step="0.01" value="${r.amount||''}" placeholder="Amount" oninput="transactionCategoryRows[${i}].amount=Number(this.value)||0"></div>`).join('')+`<button type="button" class="secondary" onclick="transactionCategoryRows.push({parent_id:'',category_id:'',amount:0});renderTransactionCategoryRows('${type}')">＋ Add category</button>`}}
 function transactionCategoryData(total,type){if(transactionCategoryMode==='single'){const r=transactionCategoryRows[0]||{};if(!r.category_id)throw new Error('Please select a category.');return [{category_id:r.category_id,amount:Number(total)}]}const rows=transactionCategoryRows.filter(r=>r.category_id&&Number(r.amount)>0);const sum=Math.round(rows.reduce((s,r)=>s+Number(r.amount||0),0)*100)/100;if(Math.abs(sum-Number(total))>.01)throw new Error(`Category amounts must add up to ${money(total)}. Currently allocated ${money(sum)}.`);return rows.map(r=>({category_id:r.category_id,amount:Number(r.amount)}))}
 async function saveTransactionCategoryRows(txId,rows){const {error:de}=await sb.from('transaction_categories').delete().eq('transaction_id',txId);if(de)throw de;if(rows.length){const {error}=await sb.from('transaction_categories').insert(rows.map(r=>({...r,transaction_id:txId,user_id:user.id})));if(error)throw error}}
 function budgetSpent(b){const [a,z]=periodRange(b.period,b);return state.transactions.filter(t=>t.transaction_date>=a&&t.transaction_date<=z&&(t.type==='expense'||t.type==='split')).reduce((sum,t)=>sum+txAllocations(t).filter(x=>categoryMatchesBudget(x.category_id,b.category_id)).reduce((a,x)=>a+(t.type==='split'?Math.min(x.amount,spending(t)):x.amount),0),0)}
@@ -731,7 +780,7 @@ function budgetStatusForRangePlus(b,a,z){
     const total=Number(t.amount||0),mine=spending(t);
     return sub+(total>0?Number(x.amount||0)*(mine/total):0);
   },0),0);
-  const amount=Number(b.amount||0);return {used,pct:amount?used/amount*100:0,cls:used>amount?'over':used>=amount*.8?'near':'good'};
+  const amount=Number(b.amount||0);return {used,pct:amount?used/amount*100:0,cls:used>amount?'over':used>=amount*.8?'mid':'low'};
 }
 function budgetStatus(b){const [a,z]=periodRange(b.period,b);return budgetStatusForRangePlus(b,a,z)}
 
@@ -1991,8 +2040,8 @@ exportPDF=exportPDFPlus;
     const splitOutstanding=sp.reduce((s,x)=>s+Math.max(0,Number(x.amount||0)-Number(x.amount_paid||0)),0);
     const received=state.reimbursements.filter(x=>x.person_id===p.id&&x.direction!=='sent').reduce((s,x)=>s+Number(x.amount||0),0);
     const sent=state.reimbursements.filter(x=>x.person_id===p.id&&x.direction==='sent').reduce((s,x)=>s+Number(x.amount||0),0);
-    const splitPayable=state.split_transactions.filter(st=>st.paid_by_person_id===p.id).reduce((s,st)=>s+Number(st.my_share||0),0);
-    const splitPayablePaid=state.split_transactions.filter(st=>st.paid_by_person_id===p.id).reduce((s,st)=>s,0);
+    const splitPayable=state.split_transactions.filter(st=>state.transactions.find(t=>t.id===st.transaction_id)?.person_id===p.id).reduce((s,st)=>s+Number(st.my_share||0),0);
+    const splitPayablePaid=0;
     const loanLent=state.loans.filter(x=>x.person_id===p.id&&x.direction==='lend').reduce((s,x)=>s+Number(x.amount||0),0);
     const loanBorrowed=state.loans.filter(x=>x.person_id===p.id&&x.direction==='borrow').reduce((s,x)=>s+Number(x.amount||0),0);
     const loanReceived=state.loan_repayments.filter(x=>x.person_id===p.id&&x.direction==='received').reduce((s,x)=>s+Number(x.amount||0),0);
@@ -2009,306 +2058,17 @@ exportPDF=exportPDFPlus;
   window.txHTML=function(t){
     if(t?.type==='split'){
       const st=state.split_transactions.find(s=>s.transaction_id===t.id);
-      if(st?.paid_by_person_id&&st.paid_by_person_id!=='__me__'){
-        const person=personName(st.paid_by_person_id);
+      if(st){
+        const payer=state.transactions.find(x=>x.id===st.transaction_id)?.person_id||'__me__';
+        const person=personName(payer);
         const mine=Number(st.my_share||0);
-        t={...t,description:t.description||'Shared expense',account_id:null,__paidByOther:person,__myShare:mine};
+        t={...t,description:t.description||'Shared expense',account_id:payer==='__me__'?t.account_id:null,__paidByOther:payer!=='__me__'?person:null,__myShare:mine};
       }
     }
     if(t?.type==='reimbursement'&&t.direction==='sent') t={...t,__sent:true};
     return oldTxHTMLFinal(t);
   };
 })();
-/* ===== Unified user card sorting v3 ===== */
-(function(){
- const KEY='mybudget_card_order_v3_';
- const uk=()=>KEY+(window.user?.id||'local');
- const load=k=>{try{const o=JSON.parse(localStorage.getItem(uk())||'{}');return Array.isArray(o[k])?o[k].map(String):[]}catch(e){return[]}};
- const save=(k,ids)=>{try{const o=JSON.parse(localStorage.getItem(uk())||'{}');o[k]=ids.map(String);localStorage.setItem(uk(),JSON.stringify(o))}catch(e){}};
- const rank=(k)=>new Map(load(k).map((id,i)=>[id,i]));
- function decorate(k,root,ids,rerender){
-   if(!root)return;
-   const cards=[...root.querySelectorAll(':scope > .row')].filter(x=>!x.classList.contains('section-title-inline'));
-   if(!cards.length)return;
-   cards.forEach((el,i)=>{if(!el.dataset.sortId)el.dataset.sortId=String(ids[i]??i);el.classList.add('mb-user-sort-card')});
-   const r=rank(k);cards.sort((a,b)=>(r.has(a.dataset.sortId)?r.get(a.dataset.sortId):999999)-(r.has(b.dataset.sortId)?r.get(b.dataset.sortId):999999)).forEach(x=>root.appendChild(x));
-   const orderedCards=[...root.querySelectorAll(':scope > .mb-user-sort-card')];
-   orderedCards.forEach(el=>{
-     if(!el.querySelector('.mb-v3-handle')){
-       const h=document.createElement('span');h.className='mb-drag-handle mb-v3-handle';h.textContent='☷';h.title='Long press and drag';(el.querySelector('.left')||el).prepend(h);
-       const nav=document.createElement('span');nav.className='mb-sort-nav';nav.innerHTML='<button type="button" class="smallbtn">↑</button><button type="button" class="smallbtn">↓</button>';
-       const action=el.querySelector('.action-row')||el.lastElementChild||el;action.appendChild(nav);
-       nav.children[0].onclick=e=>{e.stopPropagation();move(k,el,-1,rerender)};
-       nav.children[1].onclick=e=>{e.stopPropagation();move(k,el,1,rerender)};
-       drag(k,el,rerender);
-     }
-   });
- }
- function move(k,el,d,rerender){
-   const root=el.parentElement,cards=[...root.querySelectorAll(':scope > .mb-user-sort-card')],i=cards.indexOf(el),j=i+d;
-   if(i<0||j<0||j>=cards.length)return;
-   if(d<0)root.insertBefore(el,cards[j]);else root.insertBefore(cards[j],el);
-   save(k,[...root.querySelectorAll(':scope > .mb-user-sort-card')].map(x=>x.dataset.sortId));rerender();
- }
- function drag(k,el,rerender){
-   let timer=null,active=false;
-   el.addEventListener('pointerdown',e=>{if(e.target.closest('button,input,select,textarea,a'))return;timer=setTimeout(()=>{active=true;el.classList.add('mb-dragging');try{el.setPointerCapture(e.pointerId)}catch(_){}},450)});
-   el.addEventListener('pointermove',e=>{if(!active)return;e.preventDefault();const root=el.parentElement,s=[...root.querySelectorAll(':scope > .mb-user-sort-card')].filter(x=>x!==el),b=s.find(x=>e.clientY<x.getBoundingClientRect().top+x.getBoundingClientRect().height/2);b?root.insertBefore(el,b):root.appendChild(el)});
-   const end=e=>{if(timer)clearTimeout(timer);if(!active)return;active=false;el.classList.remove('mb-dragging');try{el.releasePointerCapture(e.pointerId)}catch(_){}save(k,[...el.parentElement.querySelectorAll(':scope > .mb-user-sort-card')].map(x=>x.dataset.sortId));rerender()};
-   el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
- }
- function wrap(name,k,rootId,getIds){
-   const old=window[name];if(typeof old!=='function')return;
-   const wrapped=function(){old();const root=$(rootId);if(root)decorate(k,root,getIds(),wrapped)};
-   window[name]=wrapped;
-   try{eval(name+'=wrapped')}catch(_){}
- }
- /* Goals */
- wrap('renderGoals','goals','goalList',()=>state.goals.map(x=>x.id));
- /* Reminders: each status section remains separate. */
- const oldRem=window.renderRemindersPage;
- if(typeof oldRem==='function'){
-   window.renderRemindersPage=function(){oldRem();const root=$('remindersPageList');if(!root)return;
-     const cards=[...root.querySelectorAll(':scope > .row')],pending=state.reminders.filter(x=>!x.completed),completed=state.reminders.filter(x=>x.completed);
-     let pi=0,ci=0;cards.forEach(c=>{const text=c.textContent||'';c.dataset.sortId=String((text.includes('Completed')?completed[ci++]:pending[pi++])?.id||c.dataset.sortId||'')});
-     const titles=[...root.querySelectorAll(':scope > .section-title-inline')]; // decorate independently without moving headings
-     const groups=[]; let gi=0; titles.forEach((t,idx)=>{const arr=[];let n=t.nextElementSibling;while(n&& !n.classList.contains('section-title-inline')){arr.push(n);n=n.nextElementSibling}groups.push({title:t,cards:arr,key:idx?'reminders_completed':'reminders_pending'})});
-     groups.forEach(g=>{const r=rank(g.key);g.cards.sort((a,b)=>(r.has(a.dataset.sortId)?r.get(a.dataset.sortId):999999)-(r.has(b.dataset.sortId)?r.get(b.dataset.sortId):999999)).forEach(c=>g.title.after(c));g.cards.forEach(el=>{el.classList.add('mb-user-sort-card');if(!el.querySelector('.mb-v3-handle')){const h=document.createElement('span');h.className='mb-drag-handle mb-v3-handle';h.textContent='☷';(el.querySelector('.left')||el).prepend(h);const nav=document.createElement('span');nav.className='mb-sort-nav';nav.innerHTML='<button type="button" class="smallbtn">↑</button><button type="button" class="smallbtn">↓</button>';el.lastElementChild.appendChild(nav);nav.children[0].onclick=()=>move(g.key,el,-1,window.renderRemindersPage);nav.children[1].onclick=()=>move(g.key,el,1,window.renderRemindersPage);drag(g.key,el,window.renderRemindersPage)}})});
-   };
-   try{eval('renderRemindersPage=window.renderRemindersPage')}catch(_){}
- }
- /* Lend/Borrow */
- wrap('renderLoans','loans','loanList',()=>state.people.map(p=>p.id));
- /* Money held */
- wrap('renderMoneyHeld','moneyHeld','moneyHeldList',()=>state.money_held.map(x=>x.id));
- /* Split bills */
- wrap('splitListHTML','split','splitList',()=>state.transactions.filter(x=>x.type==='split').map(x=>x.id));
- /* Accounts & People already have native arrows; ensure their cards use the same drag affordance. */
- const addStyle=document.createElement('style');addStyle.textContent=`
- .mb-user-sort-card{position:relative}.mb-sort-nav{display:inline-flex;gap:4px;margin-left:6px;vertical-align:middle}.mb-sort-nav .smallbtn{min-width:30px}
- .mb-drag-handle{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;margin-right:6px;color:var(--muted);font-size:20px;font-weight:900;cursor:grab;touch-action:none;user-select:none}.mb-dragging{opacity:.72;box-shadow:0 14px 35px rgba(0,0,0,.16);z-index:20}
- @media(max-width:600px){.mb-drag-handle{width:34px;height:34px;font-size:22px}.mb-sort-nav .smallbtn{min-width:34px;min-height:34px}}
- `;document.head.appendChild(addStyle);
- /* Categories are edited in a modal; the parent/subcategory hierarchy is deliberately kept intact. */
- window.mbMoveBudgetParent=function(id,d){
- const root=$('budgetList');if(!root)return;const a=[...root.querySelectorAll(':scope > .mb-budget-parent')],i=a.findIndex(x=>String(x.dataset.sortId)===String(id)),j=i+d;if(i<0||j<0||j>=a.length)return;
- if(d<0)root.insertBefore(a[i],a[j]);else root.insertBefore(a[j],a[i]);
- budgetSortSave('parents',[...root.querySelectorAll(':scope > .mb-budget-parent')].map(x=>x.dataset.sortId));renderBudgets();
-};
-window.mbMoveBudgetSub=function(pid,id,d){
- const root=document.querySelector(`.mb-budget-parent[data-sort-id="${CSS.escape(pid)}"] .budget-sub-list`);if(!root)return;const a=[...root.querySelectorAll(':scope > .mb-budget-sub')],i=a.findIndex(x=>String(x.dataset.sortId)===String(id)),j=i+d;if(i<0||j<0||j>=a.length)return;
- if(d<0)root.insertBefore(a[i],a[j]);else root.insertBefore(a[j],a[i]);
- budgetSortSave('parent_'+pid,[...root.querySelectorAll(':scope > .mb-budget-sub')].map(x=>x.dataset.sortId));renderBudgets();
-};
-function bindBudgetDrag(){
- document.querySelectorAll('.mb-budget-parent').forEach(el=>{
-   if(el.dataset.bv3)return;el.dataset.bv3='1';let timer=null,active=false;
-   el.addEventListener('pointerdown',e=>{if(e.target.closest('button,input,select,textarea,a'))return;timer=setTimeout(()=>{active=true;el.classList.add('mb-dragging');try{el.setPointerCapture(e.pointerId)}catch(_){}},450)});
-   el.addEventListener('pointermove',e=>{if(!active)return;e.preventDefault();const root=el.parentElement,s=[...root.querySelectorAll(':scope > .mb-budget-parent')].filter(x=>x!==el),b=s.find(x=>e.clientY<x.getBoundingClientRect().top+x.getBoundingClientRect().height/2);b?root.insertBefore(el,b):root.appendChild(el)});
-   const end=e=>{if(timer)clearTimeout(timer);if(!active)return;active=false;el.classList.remove('mb-dragging');try{el.releasePointerCapture(e.pointerId)}catch(_){}budgetSortSave('parents',[...el.parentElement.querySelectorAll(':scope > .mb-budget-parent')].map(x=>x.dataset.sortId));renderBudgets()};
-   el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
- });
- document.querySelectorAll('.mb-budget-sub').forEach(el=>{
-   if(el.dataset.bv3)return;el.dataset.bv3='1';let timer=null,active=false;
-   el.addEventListener('pointerdown',e=>{if(e.target.closest('button,input,select,textarea,a'))return;timer=setTimeout(()=>{active=true;el.classList.add('mb-dragging')},450)});
-   el.addEventListener('pointermove',e=>{if(!active)return;e.preventDefault();const root=el.parentElement,s=[...root.querySelectorAll(':scope > .mb-budget-sub')].filter(x=>x!==el),b=s.find(x=>e.clientY<x.getBoundingClientRect().top+x.getBoundingClientRect().height/2);b?root.insertBefore(el,b):root.appendChild(el)});
-   const end=()=>{if(timer)clearTimeout(timer);if(!active)return;active=false;el.classList.remove('mb-dragging');const p=el.closest('.mb-budget-parent')?.dataset.sortId;if(p)budgetSortSave('parent_'+p,[...el.parentElement.querySelectorAll(':scope > .mb-budget-sub')].map(x=>x.dataset.sortId));renderBudgets()};
-   el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
- });
-}
-const budgetObs=new MutationObserver(()=>{clearTimeout(window.__mbBudgetObs);window.__mbBudgetObs=setTimeout(bindBudgetDrag,30)});
-budgetObs.observe(document.body,{childList:true,subtree:true});
-setTimeout(bindBudgetDrag,100);
-window.mbCategoryMove=function(kind,id,parentId,d){
- const root=kind==='parent'?document.querySelector('#mbCategoryParentList'):document.querySelector(`.mb-cat-sub-list[data-parent="${CSS.escape(parentId)}"]`);
- if(!root)return;
- const cards=kind==='parent'?[...root.querySelectorAll(':scope > .mb-cat-parent')]:[...root.querySelectorAll(':scope > .mb-cat-sub')];
- const i=cards.findIndex(x=>String(x.dataset.sortId)===String(id)),j=i+d;if(i<0||j<0||j>=cards.length)return;
- if(d<0)root.insertBefore(cards[i],cards[j]);else root.insertBefore(cards[j],cards[i]);
- const k=kind==='parent'?'categories_parents':'categories_sub_'+parentId;
- save(k,[...root.children].filter(x=>kind==='parent'?x.classList.contains('mb-cat-parent'):x.classList.contains('mb-cat-sub')).map(x=>x.dataset.sortId));
-};
-function bindCategoryDrag(){
- const bindOne=(el,kind,parentId)=>{
-   if(el.dataset.catDrag)return;el.dataset.catDrag='1';let timer=null,active=false;
-   el.addEventListener('pointerdown',e=>{if(e.target.closest('button,input,select,textarea,a'))return;timer=setTimeout(()=>{active=true;el.classList.add('mb-dragging');try{el.setPointerCapture(e.pointerId)}catch(_){}},450)});
-   el.addEventListener('pointermove',e=>{if(!active)return;e.preventDefault();const root=kind==='parent'?document.querySelector('#mbCategoryParentList'):document.querySelector(`.mb-cat-sub-list[data-parent="${CSS.escape(parentId)}"]`);if(!root)return;const cards=(kind==='parent'?[...root.querySelectorAll(':scope > .mb-cat-parent')]:[...root.querySelectorAll(':scope > .mb-cat-sub')]).filter(x=>x!==el),b=cards.find(x=>e.clientY<x.getBoundingClientRect().top+x.getBoundingClientRect().height/2);b?root.insertBefore(el,b):root.appendChild(el)});
-   const end=e=>{if(timer)clearTimeout(timer);if(!active)return;active=false;el.classList.remove('mb-dragging');try{el.releasePointerCapture(e.pointerId)}catch(_){}const root=kind==='parent'?document.querySelector('#mbCategoryParentList'):document.querySelector(`.mb-cat-sub-list[data-parent="${CSS.escape(parentId)}"]`);if(root)save(kind==='parent'?'categories_parents':'categories_sub_'+parentId,[...root.children].filter(x=>kind==='parent'?x.classList.contains('mb-cat-parent'):x.classList.contains('mb-cat-sub')).map(x=>x.dataset.sortId))};
-   el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
- };
- document.querySelectorAll('.mb-cat-parent .mb-cat-handle').forEach(h=>bindOne(h.closest('.mb-cat-parent'),'parent',''));
- document.querySelectorAll('.mb-cat-sub .mb-cat-sub-handle').forEach(h=>bindOne(h.closest('.mb-cat-sub'),'sub',h.closest('.mb-cat-sub-list')?.dataset.parent||''));
-}
-const catObs=new MutationObserver(()=>{clearTimeout(window.__mbCatObs);window.__mbCatObs=setTimeout(bindCategoryDrag,30)});
-catObs.observe(document.body,{childList:true,subtree:true});
-setTimeout(bindCategoryDrag,100);
-window.mbCategorySortSave=function(kind,id,d){
-   const root=kind==='parent'?document.querySelector('#modal .mb-cat-parent-list'):document.querySelector(`#modal .mb-cat-sub-list[data-parent="${CSS.escape(id)}"]`);
-   if(!root)return;const cards=[...root.children],i=cards.findIndex(x=>x.dataset.sortId===id),j=i+d;if(i<0||j<0||j>=cards.length)return;if(d<0)root.insertBefore(cards[i],cards[j]);else root.insertBefore(cards[j],cards[i]);save(kind==='parent'?'categories_parents':'categories_sub_'+id,[...root.children].map(x=>x.dataset.sortId));
- };
- setTimeout(()=>{try{renderGoals()}catch(_){}try{renderRemindersPage()}catch(_){}try{renderLoans()}catch(_){}try{renderMoneyHeld()}catch(_){}try{splitListHTML()}catch(_){}},100);
-})();
-/* ===== My Budget sorting v4: explicit, tab-safe card ordering ===== */
-(function(){
-  const K='mybudget_card_order_v4_';
-  const uid=()=>String(window.user?.id||'local');
-  const load=(k)=>{try{const o=JSON.parse(localStorage.getItem(K+uid())||'{}');return Array.isArray(o[k])?o[k].map(String):[]}catch(_){return[]}};
-  const save=(k,ids)=>{try{const o=JSON.parse(localStorage.getItem(K+uid())||'{}');o[k]=ids.map(String);localStorage.setItem(K+uid(),JSON.stringify(o))}catch(_){}};
-  const ordered=(els,k)=>{const r=new Map(load(k).map((id,i)=>[id,i]));return els.slice().sort((a,b)=>(r.has(String(a.dataset.sortId))?r.get(String(a.dataset.sortId)):999999)-(r.has(String(b.dataset.sortId))?r.get(String(b.dataset.sortId)):999999))};
-  const nav=(el,k,rerender)=>{
-    if(!el||el.querySelector('.mb-v4-sort-nav'))return;
-    let host=el.querySelector('.action-row')||el.lastElementChild||el;
-    const n=document.createElement('span');n.className='mb-sort-nav mb-v4-sort-nav';
-    n.innerHTML='<button type="button" class="smallbtn mb-v4-up" title="Move up">↑</button><button type="button" class="smallbtn mb-v4-down" title="Move down">↓</button>';
-    host.appendChild(n);
-    const move=d=>{
-      const root=el.parentElement, a=[...root.querySelectorAll(':scope > .mb-user-sort-card')],i=a.indexOf(el),j=i+d;
-      if(i<0||j<0||j>=a.length)return;
-      if(d<0)root.insertBefore(el,a[j]);else root.insertBefore(a[j],el);
-      save(k,[...root.querySelectorAll(':scope > .mb-user-sort-card')].map(x=>x.dataset.sortId));
-      rerender();
-    };
-    n.querySelector('.mb-v4-up').onclick=e=>{e.stopPropagation();move(-1)};
-    n.querySelector('.mb-v4-down').onclick=e=>{e.stopPropagation();move(1)};
-  };
-  const drag=(el,k,rerender)=>{
-    if(!el||el.dataset.mbV4Drag)return; el.dataset.mbV4Drag='1';
-    let timer=null,active=false;
-    el.addEventListener('pointerdown',e=>{
-      if(e.target.closest('button,input,select,textarea,a'))return;
-      timer=setTimeout(()=>{active=true;el.classList.add('mb-v4-dragging');try{el.setPointerCapture(e.pointerId)}catch(_){}},450);
-    });
-    el.addEventListener('pointermove',e=>{
-      if(!active)return;e.preventDefault();
-      const root=el.parentElement, others=[...root.querySelectorAll(':scope > .mb-user-sort-card')].filter(x=>x!==el);
-      const before=others.find(x=>e.clientY < x.getBoundingClientRect().top+x.getBoundingClientRect().height/2);
-      before?root.insertBefore(el,before):root.appendChild(el);
-    });
-    const end=e=>{
-      if(timer)clearTimeout(timer); if(!active)return; active=false;el.classList.remove('mb-v4-dragging');
-      try{el.releasePointerCapture(e.pointerId)}catch(_){}
-      save(k,[...el.parentElement.querySelectorAll(':scope > .mb-user-sort-card')].map(x=>x.dataset.sortId));rerender();
-    };
-    el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
-  };
-  function generic(k,selector,ids,rerender){
-    const root=document.querySelector(selector);if(!root)return;
-    let cards=[...root.querySelectorAll(':scope > .row')].filter(x=>!x.classList.contains('section-title-inline')&&!x.classList.contains('empty'));
-    if(!cards.length)return;
-    cards.forEach((el,i)=>{el.classList.add('mb-user-sort-card');if(!el.dataset.sortId)el.dataset.sortId=String(ids[i]??i)});
-    cards=ordered(cards,k);cards.forEach(x=>root.appendChild(x));
-    cards.forEach(el=>{
-      if(!el.querySelector('.mb-v4-handle')){
-        const h=document.createElement('span');h.className='mb-drag-handle mb-v4-handle';h.textContent='☷';h.title='Long press and drag';
-        (el.querySelector('.left')||el).prepend(h);
-      }
-      nav(el,k,rerender);drag(el,k,rerender);
-    });
-  }
-  function wrap(name,fn){const old=window[name];if(typeof old!=='function')return;window[name]=fn(old);try{eval(name+'=window.'+name)}catch(_){}}
-
-  /* Goals */
-  wrap('renderGoals',old=>function(){old();generic('goals','#goalList',state.goals.map(x=>x.id),window.renderGoals)});
-  /* Accounts and People: use their actual rendered IDs, then enforce visible v4 controls. */
-  wrap('renderAccounts',old=>function(){old();generic('accounts','#accountList',state.accounts.map(x=>x.id),window.renderAccounts)});
-  wrap('renderPeople',old=>function(){old();generic('people','#peopleList',state.people.map(x=>x.id),window.renderPeople)});
-  /* Lend/Borrow */
-  wrap('renderLoans',old=>function(){old();generic('loans','#loanList',state.people.map(x=>x.id),window.renderLoans)});
-  /* Money Held */
-  wrap('renderMoneyHeld',old=>function(){old();generic('moneyHeld','#moneyHeldList',state.money_held.map(x=>x.id),window.renderMoneyHeld)});
-  /* Split bills */
-  wrap('splitListHTML',old=>function(){old();generic('split','#splitList',state.transactions.filter(x=>x.type==='split').map(x=>x.id),window.splitListHTML)});
-
-  /* Reminders: keep Pending and Completed sections separate and sortable. */
-  wrap('renderRemindersPage',old=>function(){
-    old();const root=document.querySelector('#remindersPageList');if(!root)return;
-    const titles=[...root.querySelectorAll(':scope > .section-title-inline')];
-    titles.forEach((title,idx)=>{
-      const key=idx===0?'reminders_pending':'reminders_completed',cards=[];
-      let n=title.nextElementSibling;while(n&&!n.classList.contains('section-title-inline')){if(n.classList.contains('row'))cards.push(n);n=n.nextElementSibling}
-      cards.forEach((el,i)=>{el.classList.add('mb-user-sort-card');if(!el.dataset.sortId){const src=(idx===0?state.reminders.filter(x=>!x.completed):state.reminders.filter(x=>x.completed));el.dataset.sortId=String(src[i]?.id||i)}});
-      const r=new Map(load(key).map((id,i)=>[id,i]));cards.sort((a,b)=>(r.has(a.dataset.sortId)?r.get(a.dataset.sortId):999999)-(r.has(b.dataset.sortId)?r.get(b.dataset.sortId):999999));
-      cards.forEach(el=>title.after(el));
-      cards.forEach(el=>{if(!el.querySelector('.mb-v4-handle')){const h=document.createElement('span');h.className='mb-drag-handle mb-v4-handle';h.textContent='☷';(el.querySelector('.left')||el).prepend(h)}nav(el,key,window.renderRemindersPage);drag(el,key,window.renderRemindersPage)});
-    });
-  });
-
-  /* Budgets: explicit parent + child controls, with independent order keys. */
-  const budgetDecorate=()=>{
-    const root=document.querySelector('#budgetList');if(!root)return;
-    const parents=[...root.querySelectorAll(':scope > .mb-budget-parent')];
-    parents.forEach((p,i)=>{
-      if(!p.dataset.sortId)p.dataset.sortId='__parent_'+i;
-      if(!p.querySelector('.mb-v4-budget-parent-nav')){
-        const h=p.querySelector('.budget-parent-heading');if(h){
-          const n=document.createElement('span');n.className='mb-sort-nav mb-v4-sort-nav mb-v4-budget-parent-nav';
-          n.innerHTML='<button type="button" class="smallbtn">↑</button><button type="button" class="smallbtn">↓</button>';
-          h.appendChild(n);
-          const move=d=>{const a=[...root.querySelectorAll(':scope > .mb-budget-parent')],i=a.indexOf(p),j=i+d;if(i<0||j<0||j>=a.length)return;if(d<0)root.insertBefore(p,a[j]);else root.insertBefore(a[j],p);save('budgets_parents',a.map(x=>x.dataset.sortId));renderBudgets()};
-          n.children[0].onclick=e=>{e.stopPropagation();move(-1)};n.children[1].onclick=e=>{e.stopPropagation();move(1)};
-        }
-      }
-      const sub=p.querySelector(':scope > .budget-sub-list');if(!sub)return;
-      const cards=[...sub.querySelectorAll(':scope > .mb-budget-sub')];
-      cards.forEach((el,i)=>{
-        if(!el.dataset.sortId)el.dataset.sortId=String(i);
-        if(!el.querySelector('.mb-v4-budget-sub-nav')){
-          let host=el.querySelector('.budget-sub-sort')||el.lastElementChild||el;
-          const n=document.createElement('span');n.className='mb-sort-nav mb-v4-sort-nav mb-v4-budget-sub-nav';
-          n.innerHTML='<button type="button" class="smallbtn">↑</button><button type="button" class="smallbtn">↓</button>';
-          host.appendChild(n);
-          const pid=p.dataset.sortId;
-          const move=d=>{const a=[...sub.querySelectorAll(':scope > .mb-budget-sub')],i=a.indexOf(el),j=i+d;if(i<0||j<0||j>=a.length)return;if(d<0)sub.insertBefore(el,a[j]);else sub.insertBefore(a[j],el);save('budget_parent_'+pid,a.map(x=>x.dataset.sortId));renderBudgets()};
-          n.children[0].onclick=e=>{e.stopPropagation();move(-1)};n.children[1].onclick=e=>{e.stopPropagation();move(1)};
-        }
-      });
-    });
-    /* Do not alter the existing Budget rendering/calculation logic; only decorate/reorder DOM. */
-    const pr=new Map(load('budgets_parents').map((id,i)=>[id,i]));
-    parents.sort((a,b)=>(pr.has(a.dataset.sortId)?pr.get(a.dataset.sortId):999999)-(pr.has(b.dataset.sortId)?pr.get(b.dataset.sortId):999999));
-    parents.forEach(p=>root.appendChild(p));
-    parents.forEach(p=>{const sub=p.querySelector(':scope > .budget-sub-list');if(!sub)return;const r=new Map(load('budget_parent_'+p.dataset.sortId).map((id,i)=>[id,i]));[...sub.querySelectorAll(':scope > .mb-budget-sub')].sort((a,b)=>(r.has(a.dataset.sortId)?r.get(a.dataset.sortId):999999)-(r.has(b.dataset.sortId)?r.get(b.dataset.sortId):999999)).forEach(x=>sub.appendChild(x))});
-  };
-  wrap('renderBudgets',old=>function(){old();setTimeout(budgetDecorate,0)});
-
-  /* Categories: keep parent/subcategory hierarchy intact and add visible controls. */
-  const catDecorate=()=>{
-    const root=document.querySelector('#mbCategoryParentList');if(!root)return;
-    const parents=[...root.querySelectorAll(':scope > .mb-cat-parent')];
-    parents.forEach((p,i)=>{
-      if(!p.dataset.sortId)p.dataset.sortId=String(i);
-      const n=p.querySelector('.mb-sort-nav')||(()=>{const x=document.createElement('span');x.className='mb-sort-nav';x.innerHTML='<button type="button" class="smallbtn">↑</button><button type="button" class="smallbtn">↓</button>';return x})();
-      if(!n.parentElement){(p.querySelector('.left')||p).appendChild(n)}
-      n.children[0].onclick=e=>{e.stopPropagation();window.mbCategoryMove?.('parent',p.dataset.sortId,'',-1);catDecorate()};
-      n.children[1].onclick=e=>{e.stopPropagation();window.mbCategoryMove?.('parent',p.dataset.sortId,'',1);catDecorate()};
-      const sub=p.querySelector(':scope > .left .mb-cat-sub-list');if(!sub)return;
-      [...sub.querySelectorAll(':scope > .mb-cat-sub')].forEach((s,i)=>{
-        if(!s.dataset.sortId)s.dataset.sortId=String(i);
-        if(!s.querySelector('.mb-v4-cat-nav')){const x=document.createElement('span');x.className='mb-sort-nav mb-v4-cat-nav';x.innerHTML='<button type="button" class="smallbtn">↑</button><button type="button" class="smallbtn">↓</button>';s.appendChild(x);x.children[0].onclick=e=>{e.stopPropagation();window.mbCategoryMove?.('sub',s.dataset.sortId,p.dataset.sortId,-1);catDecorate()};x.children[1].onclick=e=>{e.stopPropagation();window.mbCategoryMove?.('sub',s.dataset.sortId,p.dataset.sortId,1);catDecorate()}}
-      });
-    });
-  };
-  const mo=new MutationObserver(()=>{clearTimeout(window.__mbSortV4);window.__mbSortV4=setTimeout(()=>{catDecorate();budgetDecorate()},50)});
-  mo.observe(document.body,{childList:true,subtree:true});
-
-  const style=document.createElement('style');style.textContent=`
-    .mb-v4-sort-nav{display:inline-flex!important;gap:4px!important;align-items:center!important;margin-left:8px!important}
-    .mb-v4-sort-nav .smallbtn,.mb-v4-cat-nav .smallbtn{display:inline-flex!important;visibility:visible!important;opacity:1!important;min-width:32px!important;min-height:32px!important;align-items:center!important;justify-content:center!important;cursor:pointer!important}
-    .mb-v4-handle{display:inline-flex!important;visibility:visible!important;opacity:1!important;align-items:center!important;justify-content:center!important;width:32px!important;height:32px!important;font-size:21px!important;cursor:grab!important;touch-action:none!important;user-select:none!important}
-    .mb-v4-dragging{opacity:.65!important;transform:scale(.995);z-index:50}
-    .mb-v4-budget-parent-nav{float:right}
-    .mb-v4-budget-sub-nav{margin-left:6px!important}
-    .mb-budget-parent{transition:opacity .12s,transform .12s}
-    @media(max-width:600px){.mb-v4-sort-nav .smallbtn,.mb-v4-cat-nav .smallbtn{min-width:36px!important;min-height:36px!important}.mb-v4-handle{width:36px!important;height:36px!important;font-size:23px!important}}
-  `;document.head.appendChild(style);
-
-  setTimeout(()=>{
-    try{window.renderBudgets?.()}catch(_){} try{window.renderPeople?.()}catch(_){} try{window.renderAccounts?.()}catch(_){}
-    try{window.renderGoals?.()}catch(_){} try{window.renderRemindersPage?.()}catch(_){} try{window.renderLoans?.()}catch(_){} try{window.renderMoneyHeld?.()}catch(_){} try{window.splitListHTML?.()}catch(_){} try{catDecorate()}catch(_){}
-  },150);
-})();
-
-
 /* ===================== Unified card sorting (v5) =====================
    Adds a consistent "sort" control (drag handle + up/down arrows) to the
    top-right corner of every card across Budgets, Goals, Accounts,
@@ -2329,19 +2089,46 @@ window.mbCategorySortSave=function(kind,id,d){
     });
   }
   function v5Card(id,innerHTML,key,selector,renderFnName){
-    return `<div class="mb-v5-card" data-sort-id="${esc(String(id))}"><div class="mb-v5-nav"><span class="mb-v5-handle" title="Long press and drag">☷</span><button type="button" class="smallbtn mb-v5-btn" title="Move up" onclick="mbV5Move('${key}','${esc(String(id))}',-1,'${selector}','${renderFnName}')">↑</button><button type="button" class="smallbtn mb-v5-btn" title="Move down" onclick="mbV5Move('${key}','${esc(String(id))}',1,'${selector}','${renderFnName}')">↓</button></div>${innerHTML}</div>`;
+    const sid=esc(String(id)), sk=esc(String(key)), ss=esc(String(selector)), sr=esc(String(renderFnName));
+    return `<div class="mb-v5-card" data-sort-id="${sid}" data-sort-key="${sk}" data-sort-selector="${ss}" data-sort-render="${sr}"><div class="mb-v5-nav"><span class="mb-v5-handle" title="Long press and drag">☷</span><button type="button" class="smallbtn mb-v5-btn" data-sort-dir="-1" title="Move up" aria-label="Move up">↑</button><button type="button" class="smallbtn mb-v5-btn" data-sort-dir="1" title="Move down" aria-label="Move down">↓</button></div>${innerHTML}</div>`;
   }
+  window.mbV5Card=v5Card;
   window.mbV5Move=function(key,id,dir,selector,renderFnName){
-    const root=document.querySelector(selector);if(!root)return;
-    const cards=[...root.querySelectorAll(':scope > .mb-v5-card')];
-    const i=cards.findIndex(c=>c.dataset.sortId===String(id)),j=i+dir;
-    if(i<0||j<0||j>=cards.length)return;
+    const root=document.querySelector(selector);if(!root)return false;
+    const cards=[...root.querySelectorAll(':scope > .mb-v5-card, :scope > .mb-v5-sub-card')];
+    const i=cards.findIndex(c=>String(c.dataset.sortId)===String(id)),j=i+Number(dir);
+    if(i<0||j<0||j>=cards.length)return false;
     if(dir<0)root.insertBefore(cards[i],cards[j]);else root.insertBefore(cards[j],cards[i]);
-    v5Save(key,[...root.querySelectorAll(':scope > .mb-v5-card')].map(c=>c.dataset.sortId));
+    v5Save(key,[...root.querySelectorAll(':scope > .mb-v5-card, :scope > .mb-v5-sub-card')].map(c=>c.dataset.sortId));
     const fn=window[renderFnName];if(typeof fn==='function')fn();
+    return true;
   };
+  /* Use one document-level delegated click handler. This survives every tab re-render
+     and prevents dead/duplicate handlers on dynamically replaced cards. */
+  window.mbV5BindControls=function(selector){ /* intentionally no-op; delegation below handles all controls */ };
+  if(!window.__mbV5DelegatedControls){
+    window.__mbV5DelegatedControls=true;
+    document.addEventListener('pointerdown',e=>{
+      const btn=e.target.closest?.('.mb-v5-btn');
+      if(btn)e.stopPropagation();
+    },true);
+    document.addEventListener('click',e=>{
+      const btn=e.target.closest?.('.mb-v5-btn');
+      if(!btn)return;
+      const card=btn.closest('.mb-v5-card,.mb-v5-sub-card');
+      if(!card)return;
+      e.preventDefault(); e.stopPropagation();
+      const dir=Number(btn.dataset.sortDir||0);
+      const key=card.dataset.sortKey || card.parentElement?.dataset.sortKey;
+      const id=card.dataset.sortId;
+      const selector=card.dataset.sortSelector || card.parentElement?.dataset.sortSelector;
+      const render=card.dataset.sortRender || card.parentElement?.dataset.sortRender;
+      if(key&&id&&selector&&render)window.mbV5Move(key,id,dir,selector,render);
+    },true);
+  }
+
   window.mbV5BindDrag=function(key,selector,renderFnName){
-    document.querySelectorAll(`${selector} > .mb-v5-card`).forEach(el=>{
+    document.querySelectorAll(`${selector} > .mb-v5-card, ${selector} > .mb-v5-sub-card`).forEach(el=>{
       if(el.dataset.mbV5Drag)return;el.dataset.mbV5Drag='1';
       let timer=null,dragging=false;
       el.addEventListener('pointerdown',e=>{
@@ -2350,7 +2137,7 @@ window.mbCategorySortSave=function(kind,id,d){
       });
       el.addEventListener('pointermove',e=>{
         if(!dragging)return;e.preventDefault();
-        const root=el.parentElement,others=[...root.querySelectorAll(':scope > .mb-v5-card')].filter(x=>x!==el);
+        const root=el.parentElement,others=[...root.querySelectorAll(':scope > .mb-v5-card, :scope > .mb-v5-sub-card')].filter(x=>x!==el);
         const before=others.find(x=>e.clientY<x.getBoundingClientRect().top+x.getBoundingClientRect().height/2);
         before?root.insertBefore(el,before):root.appendChild(el);
       });
@@ -2358,7 +2145,7 @@ window.mbCategorySortSave=function(kind,id,d){
         if(timer)clearTimeout(timer);if(!dragging)return;dragging=false;el.classList.remove('mb-v5-dragging');
         try{el.releasePointerCapture(e.pointerId)}catch(_){}
         const root=el.parentElement;
-        v5Save(key,[...root.querySelectorAll(':scope > .mb-v5-card')].map(x=>x.dataset.sortId));
+        v5Save(key,[...root.querySelectorAll(':scope > .mb-v5-card, :scope > .mb-v5-sub-card')].map(x=>x.dataset.sortId));
         const fn=window[renderFnName];if(typeof fn==='function')fn();
       };
       el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
@@ -2367,6 +2154,12 @@ window.mbCategorySortSave=function(kind,id,d){
 
   const style=document.createElement('style');
   style.textContent=`
+    .mb-budget-parent{position:relative;padding-top:34px}
+    .mb-budget-parent .budget-parent-heading{position:relative}
+    .mb-budget-parent .budget-parent-heading > .mb-sort-nav{position:absolute;right:8px;top:-2px;z-index:4}
+    .mb-budget-sub{position:relative;padding-top:32px}
+    .mb-budget-sub .budget-sub-sort{position:absolute;right:6px;top:4px;display:flex;gap:3px;z-index:4}
+    .mb-sort-dragging{opacity:.65}
     .mb-v5-card{position:relative;padding-top:32px}
     .mb-v5-nav{position:absolute;top:6px;right:8px;display:flex;align-items:center;gap:3px;z-index:3}
     .mb-v5-btn{min-width:26px;min-height:26px;padding:0;display:inline-flex;align-items:center;justify-content:center;line-height:1}
@@ -2384,7 +2177,7 @@ window.mbCategorySortSave=function(kind,id,d){
     const el=document.getElementById('goalList');if(!el)return;
     const items=v5Ordered(state.goals,'goals');
     el.innerHTML=items.length?items.map(g=>v5Card(g.id,goalHTML(g),'goals','#goalList','renderGoals')).join(''):'<div class="empty">No goals yet.</div>';
-    window.mbV5BindDrag('goals','#goalList','renderGoals');
+    window.mbV5BindControls('#goalList'); window.mbV5BindDrag('goals','#goalList','renderGoals');
   };
 
   /* ---------------- Accounts (grouped by type, sortable within each group) ---------------- */
@@ -2406,7 +2199,7 @@ window.mbCategorySortSave=function(kind,id,d){
       const items=v5Ordered(groups[k],sortKey);
       return `<div class="account-type-group"><div class="account-type-title">${esc(label(k))}</div><div id="acctgrp-${k}">${items.map(a=>v5Card(a.id,mbAccountRowHTML(a),sortKey,selector,'renderAccounts')).join('')}</div></div>`;
     }).join('')||'<div class="empty">Add your first account.</div>';
-    keys.forEach(k=>window.mbV5BindDrag('accounts_'+k,`#acctgrp-${k}`,'renderAccounts'));
+    keys.forEach(k=>{window.mbV5BindControls(`#acctgrp-${k}`); window.mbV5BindDrag('accounts_'+k,`#acctgrp-${k}`,'renderAccounts')});
   };
 
   /* ---------------- Reminders (pending / completed, each sortable) ---------------- */
@@ -2415,8 +2208,8 @@ window.mbCategorySortSave=function(kind,id,d){
     const pending=v5Ordered(state.reminders.filter(r=>!r.completed),'reminders_pending');
     const completed=v5Ordered(state.reminders.filter(r=>r.completed),'reminders_completed');
     el.innerHTML=`<div class="section-title-inline">Pending <span>${pending.length}</span></div><div id="remPendingList">${pending.map(r=>v5Card(r.id,reminderHTML(r),'reminders_pending','#remPendingList','renderRemindersPage')).join('')||'<div class="empty">No pending reminders.</div>'}</div><div class="section-title-inline">Completed <span>${completed.length}</span></div><div id="remCompletedList">${completed.map(r=>v5Card(r.id,reminderHTML(r),'reminders_completed','#remCompletedList','renderRemindersPage')).join('')||'<div class="empty">No completed reminders.</div>'}</div>`;
-    window.mbV5BindDrag('reminders_pending','#remPendingList','renderRemindersPage');
-    window.mbV5BindDrag('reminders_completed','#remCompletedList','renderRemindersPage');
+    window.mbV5BindControls('#remPendingList'); window.mbV5BindDrag('reminders_pending','#remPendingList','renderRemindersPage');
+    window.mbV5BindControls('#remCompletedList'); window.mbV5BindDrag('reminders_completed','#remCompletedList','renderRemindersPage');
   };
 
   /* ---------------- People: Contacts sort also reorders People overview ---------------- */
@@ -2436,7 +2229,7 @@ window.mbCategorySortSave=function(kind,id,d){
     const listEl=document.getElementById('peopleList');
     if(listEl){
       listEl.innerHTML=ordered.length?ordered.map(p=>v5Card(p.id,`<div class="contact-row"><div class="left"><div class="bubble person">${otherPersonIcon()}</div><div><div class="name">${esc(p.name)}</div><div class="sub">${esc(p.phone||'')}${p.email?' · '+esc(p.email):''}</div></div></div><div class="action-row"><button class="smallbtn" onclick="editPerson('${p.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deletePerson('${p.id}')">Delete</button></div></div>`,'people','#peopleList','renderPeople')).join(''):'<div class="empty">No contacts yet.</div>';
-      window.mbV5BindDrag('people','#peopleList','renderPeople');
+      window.mbV5BindControls('#peopleList'); window.mbV5BindDrag('people','#peopleList','renderPeople');
     }
   };
 
@@ -2445,7 +2238,7 @@ window.mbCategorySortSave=function(kind,id,d){
     const el=document.getElementById('splitList');if(!el)return;
     const items=v5Ordered(state.transactions.filter(t=>t.type==='split'),'split');
     el.innerHTML=items.length?items.map(t=>v5Card(t.id,txHTML(t),'split','#splitList','splitListHTML')).join(''):'<div class="empty">No split transactions yet.</div>';
-    window.mbV5BindDrag('split','#splitList','splitListHTML');
+    window.mbV5BindControls('#splitList'); window.mbV5BindDrag('split','#splitList','splitListHTML');
   };
 
   /* ---------------- Lend / Borrow ---------------- */
@@ -2459,7 +2252,7 @@ window.mbCategorySortSave=function(kind,id,d){
       const inner=`<div class="loan-person-card"><div class="name">${esc(p.name)}</div><div class="loan-direction-grid"><div><span class="label">LEND</span><b class="green">${money(p.loanLent)}</b><small>Received back ${money(p.loanReceived)} · Outstanding ${money(p.loanOwed)}</small><div class="loan-actions"><button class="smallbtn" onclick="openLoanRepayment('${p.id}','received')">Receive</button><button class="smallbtn" onclick="showLoanHistory('${p.id}')">History</button></div></div><div><span class="label">BORROW</span><b class="red">${money(p.loanBorrowed)}</b><small>Repaid ${money(p.loanSent)} · Outstanding ${money(p.loanIowe)}</small><div class="loan-actions"><button class="smallbtn" onclick="openLoanRepayment('${p.id}','sent')">Repay</button><button class="smallbtn" onclick="showLoanHistory('${p.id}')">History</button></div></div></div>${state.loans.filter(l=>l.person_id===p.id).map(l=>`<div class="loan-record"><span>${l.direction==='lend'?'LEND':'BORROW'} · ${money(l.amount)} · ${fmtDate(l.loan_date)}</span><span><button class="smallbtn" onclick="editLoan('${l.id}')">Edit loan</button><button class="smallbtn dangerbtn" onclick="deleteLoan('${l.id}')">Delete loan</button></span></div>`).join('')}</div>`;
       return v5Card(p.id,inner,'loans','#loanList','renderLoans');
     }).join(''):'<div class="empty">No lend or borrow records.</div>';
-    window.mbV5BindDrag('loans','#loanList','renderLoans');
+    window.mbV5BindControls('#loanList'); window.mbV5BindDrag('loans','#loanList','renderLoans');
   };
 
   /* ---------------- Money Held ---------------- */
@@ -2469,7 +2262,7 @@ window.mbCategorySortSave=function(kind,id,d){
     const el=document.getElementById('moneyHeldList');if(!el)return;
     const items=v5Ordered(state.money_held,'moneyHeld');
     el.innerHTML=items.length?items.map(h=>v5Card(h.id,heldHTML(h),'moneyHeld','#moneyHeldList','renderMoneyHeld')).join(''):'<div class="empty">No money held for others.</div>';
-    window.mbV5BindDrag('moneyHeld','#moneyHeldList','renderMoneyHeld');
+    window.mbV5BindControls('#moneyHeldList'); window.mbV5BindDrag('moneyHeld','#moneyHeldList','renderMoneyHeld');
   };
 
   /* ---------------- Budgets (parent groups + items within, each independently sortable) ---------------- */
@@ -2490,16 +2283,16 @@ window.mbCategorySortSave=function(kind,id,d){
       const subKey='budget_sub_'+pid;
       const items=v5Ordered(g.items,subKey);
       const inner=`<div class="budget-parent-heading"><b>${name}</b><span class="badge">${items.length}</span></div><div class="budget-sub-list" id="budgrp-${pid.replace(/[^a-zA-Z0-9_-]/g,'')}">${items.map(b=>{
-        const card=`<div class="mb-v5-sub-card" data-sort-id="${esc(b.id)}"><div class="mb-v5-nav"><span class="mb-v5-handle" title="Long press and drag">☷</span><button type="button" class="smallbtn mb-v5-btn" onclick="mbV5Move('${subKey}','${esc(b.id)}',-1,'${selector}','renderBudgets')">↑</button><button type="button" class="smallbtn mb-v5-btn" onclick="mbV5Move('${subKey}','${esc(b.id)}',1,'${selector}','renderBudgets')">↓</button></div>${budgetHTML(b)}</div>`;
+        const card=`<div class="mb-v5-sub-card" data-sort-id="${esc(b.id)}" data-sort-key="${esc(subKey)}" data-sort-selector="${esc(selector)}" data-sort-render="renderBudgets"><div class="mb-v5-nav"><span class="mb-v5-handle" title="Long press and drag">☷</span><button type="button" class="smallbtn mb-v5-btn" data-sort-dir="-1" title="Move up">↑</button><button type="button" class="smallbtn mb-v5-btn" data-sort-dir="1" title="Move down">↓</button></div>${budgetHTML(b)}</div>`;
         return card;
       }).join('')}</div>`;
       return v5Card(pid,inner,'budget_parents_'+budgetPeriod,'#budgetList','renderBudgets');
     }).join('');
     parentOrdered.forEach(pid=>{
       const sel=`#budgrp-${pid.replace(/[^a-zA-Z0-9_-]/g,'')}`;
-      window.mbV5BindDrag('budget_sub_'+pid,sel,'renderBudgets');
+      window.mbV5BindControls(sel); window.mbV5BindDrag('budget_sub_'+pid,sel,'renderBudgets');
     });
-    window.mbV5BindDrag('budget_parents_'+budgetPeriod,'#budgetList','renderBudgets');
+    window.mbV5BindControls('#budgetList'); window.mbV5BindDrag('budget_parents_'+budgetPeriod,'#budgetList','renderBudgets');
   };
 
   /* ---------------- Categories ---------------- */
@@ -2508,7 +2301,7 @@ window.mbCategorySortSave=function(kind,id,d){
     const body=parents.map(p=>{
       const subKey='categories_sub_'+p.id,selector=`#catgrp-${p.id.replace(/[^a-zA-Z0-9_-]/g,'')}`;
       const subs=v5Ordered(state.categories.filter(c=>c.parent_id===p.id),subKey);
-      const subsHTML=subs.map(c=>`<div class="mb-v5-sub-card" data-sort-id="${esc(c.id)}"><div class="mb-v5-nav"><span class="mb-v5-handle" title="Long press and drag">☷</span><button type="button" class="smallbtn mb-v5-btn" onclick="mbV5Move('${subKey}','${esc(c.id)}',-1,'${selector}','mbRerenderCategoryModal')">↑</button><button type="button" class="smallbtn mb-v5-btn" onclick="mbV5Move('${subKey}','${esc(c.id)}',1,'${selector}','mbRerenderCategoryModal')">↓</button></div><div class="tree"><div><div class="name">↳ ${esc(c.name)}</div><div class="sub">${esc(c.type)} · subcategory</div></div><div class="action-row"><button type="button" class="smallbtn" onclick="editCategory('${c.id}')">Edit</button><button type="button" class="smallbtn dangerbtn" onclick="deleteCategory('${c.id}')">Delete</button></div></div></div>`).join('');
+      const subsHTML=subs.map(c=>`<div class="mb-v5-sub-card" data-sort-id="${esc(c.id)}" data-sort-key="${esc(subKey)}" data-sort-selector="${esc(selector)}" data-sort-render="mbRerenderCategoryModal"><div class="mb-v5-nav"><span class="mb-v5-handle" title="Long press and drag">☷</span><button type="button" class="smallbtn mb-v5-btn" data-sort-dir="-1" title="Move up">↑</button><button type="button" class="smallbtn mb-v5-btn" data-sort-dir="1" title="Move down">↓</button></div><div class="tree"><div><div class="name">↳ ${esc(c.name)}</div><div class="sub">${esc(c.type)} · subcategory</div></div><div class="action-row"><button type="button" class="smallbtn" onclick="editCategory('${c.id}')">Edit</button><button type="button" class="smallbtn dangerbtn" onclick="deleteCategory('${c.id}')">Delete</button></div></div></div>`).join('');
       const inner=`<div class="left"><div class="bubble">${esc(p.icon||'🏷️')}</div><div><div class="name">${esc(p.name)}</div><div class="sub">${esc(p.type)} · parent</div><div id="catgrp-${p.id.replace(/[^a-zA-Z0-9_-]/g,'')}">${subsHTML}</div></div></div><div class="action-row"><button type="button" class="smallbtn" onclick="editCategory('${p.id}')">Edit</button><button type="button" class="smallbtn dangerbtn" onclick="deleteCategory('${p.id}')">Delete</button></div>`;
       return v5Card(p.id,`<div class="row">${inner}</div>`,'categories_parents','#mbCategoryParentListV5','mbRerenderCategoryModal');
     }).join('');
@@ -2520,8 +2313,8 @@ window.mbCategorySortSave=function(kind,id,d){
     if(typeSel)typeSel.onchange=e=>{const pEl=document.getElementById('newCategoryParent');if(pEl)pEl.innerHTML=categoryParentSelect(' ',e.target.value).replace('value=" " selected','value=""')};
     const f=document.getElementById('f');
     if(f)f.onsubmit=async e=>{e.preventDefault();try{await submitForm('category',null,e.target)}catch(_){}};
-    window.mbV5BindDrag('categories_parents','#mbCategoryParentListV5','mbRerenderCategoryModal');
-    parentsForDrag().forEach(p=>window.mbV5BindDrag('categories_sub_'+p.id,`#catgrp-${p.id.replace(/[^a-zA-Z0-9_-]/g,'')}`,'mbRerenderCategoryModal'));
+    window.mbV5BindControls('#mbCategoryParentListV5'); window.mbV5BindDrag('categories_parents','#mbCategoryParentListV5','mbRerenderCategoryModal');
+    parentsForDrag().forEach(p=>{const cs=`#catgrp-${p.id.replace(/[^a-zA-Z0-9_-]/g,'')}`;window.mbV5BindControls(cs);window.mbV5BindDrag('categories_sub_'+p.id,cs,'mbRerenderCategoryModal')});
   };
   function parentsForDrag(){return state.categories.filter(c=>!c.parent_id)}
   const _openModalV5=window.openModal;
@@ -2544,4 +2337,468 @@ window.mbCategorySortSave=function(kind,id,d){
     try{window.renderMoneyHeld?.()}catch(_){}
     try{window.renderBudgets?.()}catch(_){}
   },0);
+})();
+
+
+/* ===== Final interaction hardening: Split launcher =====
+   Split launch uses a data-action handler so it remains clickable even when
+   inline event handlers are blocked or modal wrappers are replaced. */
+(function(){
+  if(window.__mbFinalSplitLauncher)return;
+  window.__mbFinalSplitLauncher=true;
+  document.addEventListener('click',function(e){
+    const btn=e.target.closest?.('[data-open-split]');
+    if(!btn)return;
+    e.preventDefault();e.stopPropagation();
+    if(typeof window.openSplitEntry==='function')window.openSplitEntry();
+    else if(typeof window.openModal==='function')window.openModal('split');
+  },true);
+})();
+
+/* ===== Split vFinal: payer-aware shared expenses =====
+   Uses transactions.person_id as the split payer so this workflow also works
+   against existing databases that do not yet have paid_by_person_id in the
+   PostgREST schema cache.  For split rows, person_id means "who paid".
+*/
+(function(){
+  const payerForSplit = st => {
+    if(!st) return '__me__';
+    const tx=state.transactions.find(t=>t.id===st.transaction_id);
+    return tx?.person_id || '__me__';
+  };
+  window.splitPayerForSplit=payerForSplit;
+
+  function splitPeopleRowsFromData(data){
+    const mine=Number(data?.my_share||0);
+    const rows=data?.id
+      ? [{person_id:'__me__',amount:mine,isMe:true}, ...state.split_participants
+          .filter(x=>x.split_transaction_id===data.id)
+          .map(x=>({person_id:x.person_id,amount:Number(x.amount||0),isMe:false}))]
+      : [{person_id:'__me__',amount:0,isMe:true},{person_id:'',amount:0,isMe:false}];
+    return rows;
+  }
+
+  function splitPayerOptions(value){
+    return `<option value="__me__" ${value==='__me__'?'selected':''}>Me</option>`+
+      state.people.map(p=>`<option value="${esc(p.id)}" ${String(value)===String(p.id)?'selected':''}>${esc(p.name)}</option>`).join('');
+  }
+
+  function renderSplitPayerState(){
+    const f=$('f'); if(!f||f.dataset.formType!=='split')return;
+    const payer=f.elements.paid_by_person_id?.value||'__me__';
+    const accountWrap=$('splitAccountWrap');
+    const account=f.elements.account_id;
+    const help=$('splitPaidByHelp');
+    const payerName=payer==='__me__'?'Me':personName(payer);
+    if(accountWrap)accountWrap.style.display=payer==='__me__'?'':'none';
+    if(account){account.required=payer==='__me__';account.disabled=payer!=='__me__';if(payer!=='__me__')account.value='';}
+    if(help)help.textContent=payer==='__me__'
+      ?'You paid the bill. The selected account is reduced by the full bill amount; only your share counts toward your budget.'
+      :`${payerName} paid the bill. Your share counts toward your budget, but no money leaves your account until you repay ${payerName}.`;
+    recalcSplit();
+  }
+
+  function renderSplitPreviewFinal(){
+    const f=$('f');if(!f||f.dataset.formType!=='split')return;
+    const total=Math.round(Number(f.elements.total_amount?.value||0)*100)/100;
+    const payer=f.elements.paid_by_person_id?.value||'__me__';
+    const me=splitRows.find(r=>r.isMe||r.person_id==='__me__');
+    const mine=splitIncludeMe?Number(me?.amount||0):0;
+    const budget=mine;
+    const p=payer==='__me__'?'You':personName(payer);
+    const account=payer==='__me__'?(f.elements.account_id?.value?accountName(f.elements.account_id.value):'Selected account'):'No account impact now';
+    const preview=$('splitPreview');if(!preview)return;
+    preview.innerHTML=`<div class="split-preview-grid">
+      <div><span>Bill</span><b>${money(total)}</b></div>
+      <div><span>Your share / budget</span><b class="purple">${money(budget)}</b></div>
+      <div><span>Paid by</span><b>${esc(p)}</b></div>
+      <div><span>Cash impact now</span><b class="${payer==='__me__'?'red':'green'}">${payer==='__me__'?`−${money(total)}`:'₹0'}</b></div>
+      <div><span>Account</span><b>${esc(account)}</b></div>
+      <div><span>${payer==='__me__'?'Others owe you':'You owe '+p}</span><b class="${payer==='__me__'?'green':'red'}">${money(payer==='__me__'?Math.max(0,total-mine):mine)}</b></div>
+    </div>`;
+  }
+
+  function recalcSplitFinal(){
+    const f=$('f');if(!f||f.dataset.formType!=='split')return;
+    const total=Math.round(Number(f.elements.total_amount?.value||0)*100)/100;
+    const me=splitRows.find(r=>r.isMe||r.person_id==='__me__');
+    const others=splitRows.filter(r=>!(r.isMe||r.person_id==='__me__')&&r.person_id);
+    if(me&&!splitIncludeMe)me.amount=0;
+    if(splitMode==='equal' && total>0){
+      const count=others.length+(splitIncludeMe?1:0);
+      if(count>0){
+        const cents=Math.round(total*100),base=Math.floor(cents/count),rem=cents-base*count;let i=0;
+        if(splitIncludeMe)me.amount=(base+(i++<rem?1:0))/100;else me.amount=0;
+        others.forEach(r=>r.amount=(base+(i++<rem?1:0))/100);
+      }
+    }
+    splitRows.forEach((r,i)=>{const input=$(`split_amount_${i}`);if(input&&document.activeElement!==input)input.value=r.amount?Number(r.amount).toFixed(2):''});
+    renderSplitPreviewFinal();
+  }
+  window.recalcSplit=recalcSplitFinal;
+
+  function renderSplitRowsFinal(){
+    const el=$('peopleRows');if(!el)return;
+    el.innerHTML=splitRows.map((r,i)=>{
+      const isMe=r.isMe||r.person_id==='__me__';
+      const options=isMe?`${myPersonIcon()} <span>${esc(getNickname())}</span>`:`<select id="split_person_${i}" aria-label="Split person ${i+1}" onchange="splitRows[${i}].person_id=this.value;recalcSplit()"><option value="">Select split person ${i+1}</option>${state.people.map(p=>`<option value="${esc(p.id)}" ${p.id===r.person_id?'selected':''}>${esc(p.name)}</option>`).join('')}</select>`;
+      return `<div class="person-grid"><div class="split-person-label">${options}</div><input id="split_amount_${i}" type="number" step="0.01" min="0" value="${r.amount?Number(r.amount).toFixed(2):''}" placeholder="Share" ${splitMode==='equal'?'readonly':''} oninput="splitRows[${i}].amount=Number(this.value)||0;recalcSplit()"><button type="button" class="smallbtn" ${isMe?'disabled':''} onclick="splitRows.splice(${i},1);renderSplitRows();recalcSplit()">×</button></div>`;
+    }).join('');
+    recalcSplitFinal();
+  }
+  window.renderSplitRows=renderSplitRowsFinal;
+  window.setSplitMode=function(m){splitMode=m;if($('splitType'))$('splitType').value=m;renderSplitRowsFinal()};
+  window.addSplitPerson=function(){splitRows.push({person_id:'',amount:0,isMe:false});renderSplitRowsFinal()};
+
+  window.openSplitEntry=function(data=null){openSplitFinal(data)};
+
+  function openSplitFinal(data=null){
+    splitMode=data?.split_type||'equal';
+    const payer=data?.person_id||'__me__';
+    splitIncludeMe=data ? Number(data?.my_share||0)>0 : true;
+    splitRows=splitPeopleRowsFromData(data);
+    transactionCategoryRows=[];
+    const categoryData=data?{...data,id:data.transaction_id||data.id,amount:Number(data.my_share||0)}:null;
+    const categoryHtml=categoryFields('expense',categoryData);
+    openModalRaw(`<h2>${data?'Edit':'Add'} split bill</h2>
+      <form id="f" data-form-type="split">
+        <label>Total bill</label><input id="splitTotal" name="total_amount" type="number" step="0.01" min="0.01" required value="${data?.total_amount??''}" oninput="recalcSplit()">
+        <label>Description</label><input name="description" required value="${esc(data?.description||'')}" placeholder="Dinner, outing, food…">
+        ${window.__mbTimestamp && typeof window.__mbTimestamp.stampField==='function' ? window.__mbTimestamp.stampField(data) : `<label>Recorded date & time</label><input name="transaction_timestamp" type="datetime-local" step="60" value="${esc(data?.created_at ? new Date(data.created_at).toISOString().slice(0,16) : new Date().toISOString().slice(0,16))}" required>`}
+        <input type="hidden" name="transaction_date" value="${esc(data?.transaction_date||localDate(data?.created_at)||today())}">
+        <label>Paid by</label><select name="paid_by_person_id" id="splitPaidBy" onchange="renderSplitPayerState()">${splitPayerOptions(payer)}</select>
+        <div class="notice" id="splitPaidByHelp"></div>
+        <div id="splitAccountWrap"><label>Paid from account</label>${sel('account_id',state.accounts,data?.account_id||'',true)}</div>
+        ${categoryHtml}
+        <label>Split type</label><div class="mode"><button type="button" id="eq" class="${splitMode==='equal'?'selected':''}" onclick="setSplitMode('equal')">Equal share</button><button type="button" id="uneq" class="${splitMode==='unequal'?'selected':''}" onclick="setSplitMode('unequal')">Unequal share</button></div>
+        <input type="hidden" name="split_type" id="splitType" value="${splitMode}">
+        <label class="checkrow split-me-check"><input type="checkbox" id="splitIncludeMe" ${splitIncludeMe?'checked':''} onchange="splitIncludeMe=this.checked;renderSplitRows();recalcSplit()"> Include me (${esc(getNickname())})</label>
+        <div class="notice">If you are not part of the bill, turn this off. Your budget impact becomes ₹0.</div>
+        <div id="peopleRows"></div>
+        <button type="button" class="secondary" onclick="addSplitPerson()">＋ Add person</button>
+        <div class="split-summary" id="splitPreview"></div>
+        <button class="primary">${data?'Update split':'Save split'}</button>
+      </form>`);
+    const f=$('f');
+    renderTransactionCategoryRows('expense');
+    renderSplitRowsFinal();
+    f.elements.paid_by_person_id.value=payer;
+    renderSplitPayerState();
+    f.onsubmit=async e=>{e.preventDefault();try{await submitForm('split',data,e.target)}catch(err){mbToast(friendlyError(err),'error')}};
+  }
+  window.renderSplitPayerState=renderSplitPayerState;
+
+  const openModalBeforeSplitFinal=window.openModal;
+  window.openModal=function(type,data=null){if(type==='split'){openSplitFinal(data);return}return openModalBeforeSplitFinal(type,data)};
+
+  const saveModalBeforeSplitFinal=window.saveModal;
+  window.saveModal=async function(type,data,f){
+    if(type!=='split')return saveModalBeforeSplitFinal(type,data,f);
+    const x=Object.fromEntries(new FormData(f).entries());
+    const total=Math.round(Number(x.total_amount||0)*100)/100;
+    if(!(total>0))throw new Error('Please enter a valid total bill amount.');
+    const payer=x.paid_by_person_id||'__me__';
+    if(payer!=='__me__'&&!state.people.some(p=>p.id===payer))throw new Error('Please select who paid the bill.');
+    if(payer==='__me__'&&!x.account_id)throw new Error('Please select the account that paid the bill.');
+    const me=splitRows.find(r=>r.isMe||r.person_id==='__me__');
+    const rows=splitRows.filter(r=>!(r.isMe||r.person_id==='__me__')&&r.person_id);
+    const includeMe=splitIncludeMe!==false;
+    if(!me)throw new Error('Your share row is required.');
+    if(!includeMe)me.amount=0;
+    if(new Set(rows.map(r=>r.person_id)).size!==rows.length)throw new Error('Each person can appear only once.');
+    if(splitMode==='equal'){
+      const count=rows.length+(includeMe?1:0);
+      if(!count)throw new Error('Add at least one person or include yourself.');
+      const cents=Math.round(total*100),base=Math.floor(cents/count),rem=cents-base*count;let i=0;
+      if(includeMe)me.amount=(base+(i++<rem?1:0))/100;else me.amount=0;
+      rows.forEach(r=>r.amount=(base+(i++<rem?1:0))/100);
+    }
+    const myShare=includeMe?Math.max(0,Math.round(Number(me.amount||0)*100)/100):0;
+    const sum=rows.reduce((s,r)=>s+Number(r.amount||0),0);
+    if(Math.abs(total-(myShare+sum))>.01)throw new Error(`Shares must add up to ${money(total)}.`);
+    const previous=data?.id?new Map(state.split_participants.filter(p=>p.split_transaction_id===data.id).map(p=>[p.person_id,Number(p.amount_paid||0)])):new Map();
+    for(const r of rows){const paid=previous.get(r.person_id)||0;if(paid>Number(r.amount||0)+.01)throw new Error(`Share for ${personName(r.person_id)} cannot be less than ${money(paid)} already repaid.`)}
+    // Budget impact is only the user's share. A bill paid by someone else has no cash impact now.
+    const budgetAmount=myShare;
+    const alloc=budgetAmount>0?transactionCategoryData(budgetAmount,'expense'):[];
+    const recordedTimestamp=x.transaction_timestamp||window.__mbTimestamp?.currentLocalDT?.()||new Date().toISOString();
+    const recordedISO=window.__mbTimestamp?.localDTToISO?window.__mbTimestamp.localDTToISO(recordedTimestamp):recordedTimestamp;
+    const recordedDate=String(recordedISO).slice(0,10);
+    const txRow={amount:total,description:x.description||'',transaction_date:recordedDate,account_id:payer==='__me__'?x.account_id:null,category_id:alloc[0]?.category_id||null,type:'split',person_id:payer==='__me__'?null:payer,notes:x.notes||null};
+    let tx,st;
+    if(data?.transaction_id){
+      tx=await update('transactions',data.transaction_id,txRow);
+      st=await update('split_transactions',data.id,{split_type:splitMode,total_amount:total,my_share:myShare});
+      await sb.from('split_participants').delete().eq('split_transaction_id',data.id);
+    }else{
+      tx=await insert('transactions',txRow);
+      st=await insert('split_transactions',{transaction_id:tx.id,split_type:splitMode,total_amount:total,my_share:myShare});
+    }
+    for(const r of rows){const paid=previous.get(r.person_id)||0;await insert('split_participants',{split_transaction_id:st.id,person_id:r.person_id,amount:Number(r.amount),amount_paid:paid,status:Number(r.amount)-paid<=.01?'paid':paid>0?'partial':'pending'});}
+    await saveTransactionCategoryRows(tx.id,alloc);
+    await saveTransactionAccountRows(tx.id,payer==='__me__'?[{account_id:x.account_id,amount:total}]:[]);
+    const ts=f?.elements?.transaction_timestamp?.value;
+    if(ts&&user){const now=new Date().toISOString();await sb.from('transactions').update({created_at:recordedISO,updated_at:now}).eq('id',tx.id).eq('user_id',user.id);await sb.from('split_transactions').update({created_at:recordedISO,updated_at:now}).eq('id',st.id).eq('user_id',user.id)}
+    return tx;
+  };
+
+  // Derive payer from the linked transaction so existing databases without
+  // split_transactions.paid_by_person_id continue to work.
+  const peopleBalancesBeforeSplitFinal=window.peopleBalances;
+  window.peopleBalances=function(){
+    const base=state.people.map(p=>{
+      const sp=state.split_participants.filter(x=>x.person_id===p.id);
+      const splitGross=sp.reduce((s,x)=>s+Number(x.amount||0),0);
+      const splitOutstanding=sp.reduce((s,x)=>s+Math.max(0,Number(x.amount||0)-Number(x.amount_paid||0)),0);
+      const received=state.reimbursements.filter(x=>x.person_id===p.id&&x.direction!=='sent').reduce((s,x)=>s+Number(x.amount||0),0);
+      const sent=state.reimbursements.filter(x=>x.person_id===p.id&&x.direction==='sent').reduce((s,x)=>s+Number(x.amount||0),0);
+      const payable=state.split_transactions.filter(st=>payerForSplit(st)===p.id).reduce((s,st)=>s+Number(st.my_share||0),0);
+      const loansLent=state.loans.filter(x=>x.person_id===p.id&&x.direction==='lend').reduce((s,x)=>s+Number(x.amount||0),0);
+      const loansBorrowed=state.loans.filter(x=>x.person_id===p.id&&x.direction==='borrow').reduce((s,x)=>s+Number(x.amount||0),0);
+      const loanReceived=state.loan_repayments.filter(x=>x.person_id===p.id&&x.direction==='received').reduce((s,x)=>s+Number(x.amount||0),0);
+      const loanSent=state.loan_repayments.filter(x=>x.person_id===p.id&&x.direction==='sent').reduce((s,x)=>s+Number(x.amount||0),0);
+      const theyOwe=Math.max(0,splitOutstanding-received)+Math.max(0,loansLent-loanReceived);
+      const iOwe=Math.max(0,payable-sent)+Math.max(0,loansBorrowed-loanSent);
+      return {...p,balance:theyOwe,iOwe,totalOwed:splitGross,totalRepaid:received,loanOwed:Math.max(0,loansLent-loanReceived),loanIowe:Math.max(0,loansBorrowed-loanSent),loanLent:loansLent,loanReceived,splitPayable:Math.max(0,payable-sent)};
+    });
+    return base;
+  };
+
+  const txHTMLBeforeSplitFinal=window.txHTML;
+  window.txHTML=function(t){
+    const st=t?.type==='split'?state.split_transactions.find(s=>s.transaction_id===t.id):null;
+    if(st){const payer=payerForSplit(st);const mine=Number(st.my_share||0);t={...t,__paidByOther:payer!=='__me__'?personName(payer):null,__myShare:mine,account_id:payer==='__me__'?t.account_id:null};}
+    return txHTMLBeforeSplitFinal(t);
+  };
+
+  // Final split renderer: payer-aware details plus the same v5 sortable card UI.
+  function v5SortFinal(items,key){
+    try{const raw=localStorage.getItem('mybudget_sort_v5_'+((window.user&&window.user.id)||'local')+'_'+key)||'[]';const order=JSON.parse(raw);const rank=new Map((Array.isArray(order)?order:[]).map((id,i)=>[String(id),i]));return items.slice().sort((a,b)=>(rank.has(String(a.id))?rank.get(String(a.id)):999999)-(rank.has(String(b.id))?rank.get(String(b.id)):999999));}catch(_){return items.slice()}
+  }
+  window.splitListHTML=function(){
+    const el=$('splitList');if(!el)return;
+    const rows=state.transactions.filter(t=>t.type==='split').slice().sort((a,b)=>String(b.created_at||b.transaction_date||'').localeCompare(String(a.created_at||a.transaction_date||'')));
+    const ordered=v5SortFinal(rows,'split');
+    el.innerHTML=ordered.length?ordered.map(t=>{
+      const st=state.split_transactions.find(s=>s.transaction_id===t.id),payer=payerForSplit(st),mine=Number(st?.my_share||0);
+      const inner=`<div class="row transaction-row"><div class="left"><div class="bubble split">🔀</div><div class="tx-content"><div class="name">${esc(t.description||'Shared expense')}</div><div class="sub">Recorded ${esc(window.fmtDateTime?.(t.created_at)||fmtDate(t.transaction_date))} · Paid by ${esc(payer==='__me__'?'Me':personName(payer))} · Your share ${money(mine)}</div></div></div><div class="tx-right" style="text-align:right"><b class="red">−${money(mine)}</b><div class="action-row"><button class="smallbtn" onclick="editTx('${t.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteTx('${t.id}')">Delete</button></div></div></div>`;
+      return window.mbV5Card(t.id,inner,'split','#splitList','splitListHTML');
+    }).join(''):'<div class="empty">No split transactions yet.</div>';
+    window.mbV5BindControls('#splitList'); window.mbV5BindDrag('split','#splitList','splitListHTML');
+  };})();
+
+
+/* =====================================================================
+   FINAL PATCH (v-final): 
+   1) Categories: list-first view; "+" opens a separate "Add category" form.
+   2) Budgets: clean, dependable up/down sort (own storage + own click
+      handling, independent of any earlier sort code).
+   3) Budgets: cards show "Remaining · before split" and
+      "Remaining · after split" instead of the old split-details block.
+      Split breakdowns remain only on the Split tab.
+   4) Split entry: fixes a bug where choosing a top-level category for an
+      Expense/Split (without also touching the subcategory field) left the
+      saved category empty even though the dropdown visually showed one,
+      which silently blocked saving. Also adds a direct "+ Split" entry
+      point on the Transactions tab and hardens the existing Split buttons.
+   ===================================================================== */
+(function(){
+
+  /* ---------------------------------------------------------------
+     1) CATEGORIES — list first, "+" opens creation form
+     --------------------------------------------------------------- */
+  function mbFinalCategoryListHTML(){
+    const parents = state.categories.filter(c=>!c.parent_id);
+    const rows = parents.map(p=>{
+      const subs = state.categories.filter(c=>c.parent_id===p.id);
+      const subsHtml = subs.map(c=>`<div class="tree"><div class="row"><div><div class="name">↳ ${esc(c.name)}</div><div class="sub">${esc(c.type)} · subcategory</div></div><div class="action-row"><button type="button" class="smallbtn" onclick="editCategory('${c.id}')">Edit</button><button type="button" class="smallbtn dangerbtn" onclick="deleteCategory('${c.id}')">Delete</button></div></div></div>`).join('');
+      return `<div class="row"><div class="left"><div class="bubble">${esc(p.icon||'🏷️')}</div><div><div class="name">${esc(p.name)}</div><div class="sub">${esc(p.type)} · parent</div>${subsHtml}</div></div><div class="action-row"><button type="button" class="smallbtn" onclick="editCategory('${p.id}')">Edit</button><button type="button" class="smallbtn dangerbtn" onclick="deleteCategory('${p.id}')">Delete</button></div></div>`;
+    }).join('');
+    return `<div class="card-title-row" style="margin-bottom:8px"><h2 style="margin:0">Categories</h2><button type="button" class="smallbtn" onclick="window.mbOpenNewCategoryForm()">＋ New category</button></div>${rows||'<div class="empty">No categories yet. Tap “＋ New category” to add one.</div>'}`;
+  }
+
+  window.mbShowCategoryList = function(){
+    openModalRaw(mbFinalCategoryListHTML());
+  };
+
+  window.mbOpenNewCategoryForm = function(){
+    openModalRaw(`<button type="button" class="link" style="display:inline-block;margin-bottom:10px" onclick="window.mbShowCategoryList()">‹ Back to categories</button><h2>Add category</h2><form id="f"><label>Name</label><input name="name" required placeholder="Rent"><label>Type</label><select name="type" id="newCategoryType"><option value="expense">Expense</option><option value="income">Income</option><option value="both">Both (income & expense)</option></select><label>Parent category (optional)</label><div id="newCategoryParent">${categoryParentSelect('','expense')}</div><label>Icon</label><input name="icon" value="🏷️"><label>Color</label><input name="color" value="#7666cf"><button class="primary">Add category</button></form>`);
+    const typeSel = $('newCategoryType');
+    if(typeSel) typeSel.onchange = e=>{ const pEl=$('newCategoryParent'); if(pEl) pEl.innerHTML = categoryParentSelect(' ', e.target.value).replace('value=" " selected','value=""'); };
+    const f = $('f');
+    if(f) f.onsubmit = async e=>{
+      e.preventDefault();
+      try{ await submitForm('category', null, e.target); window.mbShowCategoryList(); }
+      catch(err){ /* submitForm already shows an error toast; stay on the form */ }
+    };
+  };
+
+  const _mbOpenModalBeforeCategoryFinal = window.openModal;
+  window.openModal = function(type, data=null){
+    if(type==='category'){ window.mbShowCategoryList(); return; }
+    return _mbOpenModalBeforeCategoryFinal(type, data);
+  };
+
+  /* ---------------------------------------------------------------
+     2) & 3) BUDGETS — dependable sort + before/after-split remaining
+     --------------------------------------------------------------- */
+  function mbBudgetOrderKey(){ return 'mybudget_budget_order_final_'+((window.user&&window.user.id)||'local'); }
+  function mbBudgetLoadOrder(){ try{ return JSON.parse(localStorage.getItem(mbBudgetOrderKey())||'{}'); }catch(e){ return {}; } }
+  function mbBudgetSaveOrder(o){ try{ localStorage.setItem(mbBudgetOrderKey(), JSON.stringify(o)); }catch(e){} }
+  function mbBudgetOrderedIds(ids, orderArr){
+    const rank = new Map((Array.isArray(orderArr)?orderArr:[]).map((id,i)=>[String(id), i]));
+    return ids.slice().sort((a,b)=>{
+      const ra = rank.has(String(a)) ? rank.get(String(a)) : Infinity;
+      const rb = rank.has(String(b)) ? rank.get(String(b)) : Infinity;
+      return ra - rb;
+    });
+  }
+  function mbBudgetGroupsForPeriod(period){
+    const now = todayDate(), cy = now.getFullYear(), cm = now.getMonth()+1;
+    const arr = state.budgets.filter(b=>b.period===period && (!b.year||b.year===cy) && (period!=='monthly'||!b.month||b.month===cm));
+    const groups = new Map();
+    arr.forEach(b=>{
+      const c = b.category_id ? state.categories.find(x=>x.id===b.category_id) : null;
+      const root = c ? rootCategory(c) : null;
+      const id = root?.id || '__uncategorized__';
+      if(!groups.has(id)) groups.set(id, {root, items:[]});
+      groups.get(id).items.push(b);
+    });
+    return groups;
+  }
+  function mbBudgetCurrentIds(scope){
+    const order = mbBudgetLoadOrder();
+    if(scope.indexOf('parents_')===0){
+      const period = scope.slice('parents_'.length);
+      const groups = mbBudgetGroupsForPeriod(period);
+      return mbBudgetOrderedIds([...groups.keys()], order[scope]);
+    }
+    if(scope.indexOf('sub_')===0){
+      const rest = scope.slice('sub_'.length);
+      const period = rest.split('__')[0];
+      const pid = rest.slice(period.length+2);
+      const groups = mbBudgetGroupsForPeriod(period);
+      const g = groups.get(pid);
+      const ids = g ? g.items.map(x=>String(x.id)) : [];
+      return mbBudgetOrderedIds(ids, order[scope]);
+    }
+    return [];
+  }
+  function mbBudgetMove(scope, id, dir){
+    const ids = mbBudgetCurrentIds(scope);
+    const i = ids.indexOf(String(id)), j = i + dir;
+    if(i<0 || j<0 || j>=ids.length) return;
+    const next = ids.slice();
+    const tmp = next[i]; next[i]=next[j]; next[j]=tmp;
+    const order = mbBudgetLoadOrder();
+    order[scope] = next;
+    mbBudgetSaveOrder(order);
+  }
+
+  if(!window.__mbBudgetSortBoundFinal){
+    window.__mbBudgetSortBoundFinal = true;
+    document.addEventListener('click', function(e){
+      const btn = e.target.closest && e.target.closest('.mbg-move');
+      if(!btn) return;
+      e.preventDefault(); e.stopPropagation();
+      if(btn.disabled) return;
+      const scope = btn.dataset.mbgScope, id = btn.dataset.mbgId, dir = Number(btn.dataset.mbgDir||0);
+      if(!scope || !id || !dir) return;
+      mbBudgetMove(scope, id, dir);
+      if(typeof window.renderBudgets==='function') window.renderBudgets();
+    }, true);
+  }
+
+  function mbSpentExcludingSplit(b){
+    const [a,z] = periodRange(b.period, b);
+    const target = b.subcategory_id || b.category_id;
+    return state.transactions.filter(t=>t.transaction_date>=a && t.transaction_date<=z && t.type==='expense')
+      .reduce((sum,t)=> sum + txAllocations(t).filter(x=> !target || categoryMatchesBudget(x.category_id, target)).reduce((s,x)=>s+Number(x.amount||0),0), 0);
+  }
+
+  window.budgetHTML = function(b){
+    const s = budgetStatus(b);
+    const amount = Number(b.amount||0);
+    const spentBefore = mbSpentExcludingSplit(b);
+    const spentAfter = s.used;
+    const remBefore = Math.max(0, amount - spentBefore);
+    const remAfter = Math.max(0, amount - spentAfter);
+    const overAfter = spentAfter > amount + .004;
+    return `<div class="row budget-row"><div class="budget-main"><div class="total-line"><span><b>${esc(b.name)}</b><div class="sub">${esc(budgetCategoryLabel(b))} · ${b.period}</div></span></div><div class="budget-progress-line"><div class="progress"><div class="bar ${s.cls}" style="width:${Math.min(100,s.pct)}%"></div></div><span class="badge status-${s.cls}">${s.pct.toFixed(0)}%</span></div><div class="budget-amounts"><span class="budget-amount budget-spent">Spent <b class="red">${money(spentAfter)}</b></span><span class="budget-amount budget-limit">Budget <b class="purple">${money(amount)}</b></span></div><div class="budget-amounts budget-amounts-split"><span class="budget-amount budget-remaining">Remaining · before split<b class="green">${money(remBefore)}</b></span><span class="budget-amount ${overAfter?'budget-remaining-over':'budget-remaining'}">Remaining · after split<b class="${overAfter?'red':'green'}">${money(remAfter)}</b></span></div></div><div class="action-row"><button class="smallbtn" onclick="editBudget('${b.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteBudget('${b.id}')">Delete</button></div></div>`;
+  };
+
+  window.renderBudgets = function(){
+    const tabsEl = $('budgetTabs');
+    if(tabsEl) tabsEl.innerHTML = ['weekly','monthly','yearly'].map(p=>`<button class="${budgetPeriod===p?'active':''}" onclick="budgetPeriod='${p}';renderBudgets()">${p[0].toUpperCase()+p.slice(1)}</button>`).join('');
+    const listEl = $('budgetList'); if(!listEl) return;
+    const groups = mbBudgetGroupsForPeriod(budgetPeriod);
+    if(!groups.size){ listEl.innerHTML = `<div class="empty">No ${budgetPeriod} budgets yet.</div>`; return; }
+    const parentScope = 'parents_'+budgetPeriod;
+    const parentIds = mbBudgetCurrentIds(parentScope);
+    listEl.innerHTML = parentIds.map((pid,pIdx)=>{
+      const g = groups.get(pid);
+      const name = g.root ? `${esc(g.root.icon||'🏷️')} ${esc(g.root.name)}` : 'Uncategorized';
+      const subScope = 'sub_'+budgetPeriod+'__'+pid;
+      const subIds = mbBudgetCurrentIds(subScope);
+      const itemsHtml = subIds.map((bid,idx)=>{
+        const b = g.items.find(x=>String(x.id)===bid);
+        if(!b) return '';
+        return `<div class="mbg-item"><div class="mbg-controls"><button type="button" class="smallbtn mbg-move" data-mbg-scope="${esc(subScope)}" data-mbg-id="${esc(bid)}" data-mbg-dir="-1" title="Move up" ${idx===0?'disabled':''}>↑</button><button type="button" class="smallbtn mbg-move" data-mbg-scope="${esc(subScope)}" data-mbg-id="${esc(bid)}" data-mbg-dir="1" title="Move down" ${idx===subIds.length-1?'disabled':''}>↓</button></div><div class="mbg-item-body">${budgetHTML(b)}</div></div>`;
+      }).join('');
+      return `<div class="mbg-parent"><div class="budget-parent-heading"><b>${name}</b><span class="badge">${g.items.length}</span><span class="mbg-controls"><button type="button" class="smallbtn mbg-move" data-mbg-scope="${esc(parentScope)}" data-mbg-id="${esc(pid)}" data-mbg-dir="-1" title="Move up" ${pIdx===0?'disabled':''}>↑</button><button type="button" class="smallbtn mbg-move" data-mbg-scope="${esc(parentScope)}" data-mbg-id="${esc(pid)}" data-mbg-dir="1" title="Move down" ${pIdx===parentIds.length-1?'disabled':''}>↓</button></span></div><div class="budget-sub-list">${itemsHtml}</div></div>`;
+    }).join('');
+  };
+
+  const mbBudgetStyle = document.createElement('style');
+  mbBudgetStyle.textContent = `
+    .mbg-parent{margin-bottom:14px}
+    .budget-parent-heading{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+    .budget-parent-heading b{flex:1;min-width:0}
+    .mbg-controls{display:flex;gap:4px;flex:none}
+    .mbg-controls .smallbtn{min-width:30px;min-height:30px;padding:0;display:inline-flex;align-items:center;justify-content:center}
+    .mbg-controls .smallbtn:disabled{opacity:.35}
+    .mbg-item{display:flex;align-items:flex-start;gap:6px}
+    .mbg-item .mbg-controls{flex-direction:column;padding-top:14px}
+    .mbg-item-body{flex:1;min-width:0}
+    .budget-amounts-split{grid-template-columns:1fr 1fr;margin-top:7px}
+    .budget-amounts-split .budget-amount{display:flex;flex-direction:column;gap:2px}
+  `;
+  document.head.appendChild(mbBudgetStyle);
+
+  /* ---------------------------------------------------------------
+     4) SPLIT ENTRY — direct Transactions-tab access + rebind safety net
+     --------------------------------------------------------------- */
+  const txHeader = document.querySelector('#transactions .section');
+  if(txHeader && !txHeader.querySelector('[data-open-split]')){
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'icon';
+    btn.setAttribute('data-open-split','');
+    btn.title = 'Add split bill';
+    btn.textContent = '🔀';
+    btn.style.marginLeft = '8px';
+    txHeader.appendChild(btn);
+  }
+
+  /* ---------------------------------------------------------------
+     5) SAFETY NET — surface unexpected errors instead of failing silently
+     (this is exactly the kind of bug pattern that hid the Split-button
+     crash: an error thrown inside a click handler with nothing shown
+     on screen). This does not change any app behavior when things work
+     normally; it only shows a toast + logs details when something throws.
+     --------------------------------------------------------------- */
+  if(!window.__mbGlobalErrorNetInstalled){
+    window.__mbGlobalErrorNetInstalled = true;
+    let lastShown = 0;
+    function mbNotifyUnexpectedError(err){
+      const now = Date.now();
+      if(now - lastShown < 1500) return; // avoid spamming multiple toasts for one failure
+      lastShown = now;
+      console.error('[My Budget] Unexpected error:', err);
+      try{ if(typeof window.mbToast==='function') window.mbToast('Something went wrong with that action. Please try again.', 'error'); }catch(e){}
+    }
+    window.addEventListener('error', function(e){ mbNotifyUnexpectedError(e?.error || e?.message || e); });
+    window.addEventListener('unhandledrejection', function(e){ mbNotifyUnexpectedError(e?.reason); });
+  }
+
 })();
