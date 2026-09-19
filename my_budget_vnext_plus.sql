@@ -317,6 +317,7 @@ create table if not exists public.money_held(
  received_date date not null default current_date,
  status text not null default 'pending' check(status in('pending','settled')),
  settled_date date,
+ settled_at timestamptz,
  notes text,
  created_at timestamptz not null default now(),
  updated_at timestamptz not null default now()
