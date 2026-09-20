@@ -3417,3 +3417,745 @@ exportPDF=exportPDFPlus;
 
   const style=document.createElement('style');style.textContent=`.mb-tx-icon{font-family:Arial,sans-serif!important;font-size:18px!important;font-weight:900!important;line-height:1!important;color:var(--ink)!important}.bubble.income.mb-tx-icon{color:var(--mint)!important}.bubble.expense.mb-tx-icon{color:var(--red)!important}.bubble.transfer.mb-tx-icon{color:var(--blue)!important}.bubble.split.mb-tx-icon{color:var(--purple)!important}@media(max-width:560px){.transaction-row .mb-tx-icon{display:grid!important;visibility:visible!important;opacity:1!important;width:36px!important;height:36px!important;font-size:17px!important;flex:0 0 36px!important}.transaction-row .left{min-width:0!important}.transaction-row .tx-content{min-width:0!important}}`;document.head.appendChild(style);
 })();
+
+/* ===== FINAL SPLIT CREATION + SETTLEMENT UX FIX ===== */
+(function(){
+  const _saveModalFinal = window.saveModal;
+
+  function num(v){ const n=Number(v); return Number.isFinite(n)?n:0; }
+  function payerFor(st){ return st?.paid_by_person_id || state.transactions.find(t=>t.id===st?.transaction_id)?.person_id || '__me__'; }
+
+  // Work out the outstanding amount for one split from the actual person-level
+  // reimbursements, applying repayments FIFO to that person's splits.
+  function splitOutstandingMap(st){
+    const out={}; if(!st)return out;
+    const payer=payerFor(st);
+    const splitTx=state.transactions.find(t=>t.id===st.transaction_id);
+    const relevant = (state.split_transactions||[]).filter(s=>{
+      const p=payerFor(s); return p===payer;
+    }).slice().sort((a,b)=>String(a.created_at||'').localeCompare(String(b.created_at||'')));
+    if(payer==='__me__'){
+      const pids=(state.split_participants||[]).filter(p=>p.split_transaction_id===st.id&&p.person_id).map(p=>p.person_id);
+      for(const pid of pids){
+        const total=state.split_participants.filter(p=>p.split_transaction_id===st.id&&p.person_id===pid).reduce((s,p)=>s+num(p.amount),0);
+        out[pid]=total;
+      }
+      // Received reimbursements are applied FIFO to this person's splits.
+      for(const pid of Object.keys(out)){
+        let pool=state.reimbursements.filter(r=>r.person_id===pid&&r.direction!=='sent').reduce((s,r)=>s+num(r.amount),0);
+        for(const s of relevant){
+          if(!pool)break;
+          const share=state.split_participants.filter(p=>p.split_transaction_id===s.id&&p.person_id===pid).reduce((x,p)=>x+num(p.amount),0);
+          if(!share)continue;
+          const used=Math.min(share,pool); pool-=used;
+          if(s.id===st.id) out[pid]=Math.max(0,share-used);
+        }
+      }
+    }else{
+      const pid=payer;
+      let pool=state.reimbursements.filter(r=>r.person_id===pid&&r.direction==='sent').reduce((s,r)=>s+num(r.amount),0);
+      for(const s of relevant){
+        if(!pool)break;
+        const share=num(s.my_share); if(!share)continue;
+        const used=Math.min(share,pool); pool-=used;
+        if(s.id===st.id) out[pid]=Math.max(0,share-used);
+      }
+      if(out[pid]===undefined) out[pid]=num(st.my_share);
+    }
+    return out;
+  }
+
+  window.createSplitFromTransaction = function(txId){
+    const tx=state.transactions.find(t=>String(t.id)===String(txId));
+    if(!tx || tx.type!=='expense') return mbToast('Only expense transactions can be split.','error');
+    const existing=state.split_transactions.find(s=>String(s.transaction_id)===String(tx.id));
+    if(existing) return mbToast('This transaction already has a split.','error');
+    openSplitModalWithAccounts({...tx,__createSplitFromTransaction:true,transaction_id:tx.id,id:null,total_amount:tx.amount,description:tx.description||'',transaction_date:tx.transaction_date,account_id:tx.account_id});
+  };
+
+  // Save a split against an existing expense instead of creating a duplicate expense.
+  window.saveModal = async function(type,data,f){
+    if(type==='split' && data?.__createSplitFromTransaction){
+      const x=Object.fromEntries(new FormData(f).entries());
+      const total=Math.round(num(x.total_amount)*100)/100;
+      if(!(total>0))throw new Error('Please enter a valid total bill amount.');
+      const me=splitRows.find(r=>r.isMe||r.person_id==='__me__');
+      const rows=splitRows.filter(r=>!(r.isMe||r.person_id==='__me__')&&r.person_id);
+      const paidBy=x.paid_by_person_id||'__me__';
+      if(!me)throw new Error('Your share row is required.');
+      if(new Set(rows.map(r=>r.person_id)).size!==rows.length)throw new Error('Each person can appear only once.');
+      if(paidBy!=='__me__'&&!state.people.some(p=>p.id===paidBy))throw new Error('Please select who paid the bill.');
+      if(paidBy==='__me__'&&!x.account_id)throw new Error('Please select the account that paid the bill.');
+      const includeMe=splitIncludeMe!==false;
+      if(splitMode==='equal'){
+        const participants=(includeMe?1:0)+rows.length;
+        if(!participants)throw new Error('Add at least one other person or include yourself.');
+        const cents=Math.round(total*100),base=Math.floor(cents/participants),rem=cents-base*participants;let i=0;
+        me.amount=includeMe?(base+(i++<rem?1:0))/100:0;
+        rows.forEach(r=>r.amount=(base+(i++<rem?1:0))/100);
+      }
+      const myShare=includeMe?Math.max(0,Math.round(num(me.amount)*100)/100):0;
+      const combined=Math.round((myShare+rows.reduce((s,r)=>s+num(r.amount),0))*100)/100;
+      if(Math.abs(total-combined)>.01)throw new Error(`Shares must add up to ${money(total)}.`);
+      const allocBase=paidBy==='__me__'?total:myShare;
+      if(allocBase<=0)throw new Error('Your share must be greater than ₹0 when someone else paid.');
+      const alloc=transactionCategoryData(allocBase,'expense');
+      const tx=await update('transactions',data.transaction_id,{amount:total,description:x.description||'',transaction_date:String(x.transaction_date).slice(0,10),account_id:paidBy==='__me__'?x.account_id:null,category_id:alloc[0]?.category_id||null,type:'split',notes:x.notes||null});
+      const st=await insert('split_transactions',{transaction_id:tx.id,split_type:splitMode,total_amount:total,my_share:myShare,paid_by_person_id:paidBy});
+      for(const r of rows)await insert('split_participants',{split_transaction_id:st.id,person_id:r.person_id,amount:num(r.amount),amount_paid:0,status:'pending'});
+      await saveTransactionCategoryRows(tx.id,alloc);
+      await saveTransactionAccountRows(tx.id,paidBy==='__me__'?[{account_id:x.account_id,amount:total}]:[]);
+      const ts=f?.elements?.transaction_timestamp?.value;
+      if(ts&&user){const iso=window.__mbTimestamp?.localDTToISO?window.__mbTimestamp.localDTToISO(ts):ts;const now=new Date().toISOString();await sb.from('transactions').update({created_at:iso,updated_at:now}).eq('id',tx.id).eq('user_id',user.id);await sb.from('split_transactions').update({created_at:iso}).eq('id',st.id).eq('user_id',user.id);}
+      await loadData(); closeModal(); render(); mbToast('Split created for this transaction.'); return tx;
+    }
+    return _saveModalFinal(type,data,f);
+  };
+
+  window.settleSplit = function(splitId){
+    const st=state.split_transactions.find(s=>String(s.id)===String(splitId)); if(!st)return;
+    const payer=payerFor(st), map=splitOutstandingMap(st);
+    const opts=Object.entries(map).filter(([,v])=>v>.009);
+    if(!opts.length)return mbToast('This split is already settled.');
+    const defaultPid=payer==='__me__'?opts[0][0]:payer;
+    const direction=payer==='__me__'?'received':'sent';
+    openModal('repayment',{person_id:defaultPid,amount:opts[0][1],reimbursement_direction:direction,reimbursement_date:today(),transaction_date:today(),account_id:'',notes:`Settlement for split: ${state.transactions.find(t=>t.id===st.transaction_id)?.description||'Shared expense'}`});
+    const f=$('f'); if(f){
+      const psel=f.elements.person_id;
+      if(psel && payer==='__me__'){
+        psel.innerHTML=opts.map(([pid,v])=>`<option value="${esc(pid)}">${esc(personName(pid))} · ${money(v)} outstanding</option>`).join('');
+        psel.value=defaultPid;
+        const amt=f.elements.amount; if(amt)amt.value=String(opts[0][1].toFixed(2));
+        psel.onchange=()=>{const v=Number(map[psel.value]||0);if(amt)amt.value=v.toFixed(2);};
+      }
+      const dir=f.elements.reimbursement_direction; if(dir){dir.value=direction;dir.dispatchEvent(new Event('change'));}
+    }
+  };
+
+  // Add Create Split / Split Created to normal transaction cards.
+  const _txHTMLSplitBase=window.txHTML;
+  window.txHTML=function(t){
+    let html=_txHTMLSplitBase(t);
+    if(t && !t.__special && t.type==='expense'){
+      const existing=state.split_transactions.find(s=>String(s.transaction_id)===String(t.id));
+      const label=existing?'✓ Split Created':'＋ Create Split';
+      const btn=existing?`<button type="button" class="smallbtn split-created-btn" disabled>${label}</button>`:`<button type="button" class="smallbtn" onclick="createSplitFromTransaction('${String(t.id).replace(/'/g,"\\'")}')">${label}</button>`;
+      html=html.replace(/(<div class="action-row">)/,`$1${btn}`);
+    }
+    return html;
+  };
+
+  // Split tab: add a settlement control and make its state visible.
+  const _splitListBase=window.splitListHTML;
+  window.splitListHTML=function(){
+    const el=$('splitList'); if(!el||typeof _splitListBase!=='function')return;
+    _splitListBase();
+    el.querySelectorAll('.transaction-row').forEach(row=>{
+      const name=row.querySelector('.name')?.textContent||'';
+      const tx=state.transactions.find(t=>String(t.description||'Shared expense')===String(name));
+      // Prefer the linked transaction through the rendered description; fall back by row order.
+      let st=tx?state.split_transactions.find(s=>String(s.transaction_id)===String(tx.id)):null;
+      if(!st){
+        const all=Array.from(el.querySelectorAll('.transaction-row')); const idx=all.indexOf(row); const rows=state.transactions.filter(t=>t.type==='split').slice().sort((a,b)=>String(b.created_at||b.transaction_date||'').localeCompare(String(a.created_at||a.transaction_date||''))); const t=rows[idx]; if(t)st=state.split_transactions.find(s=>String(s.transaction_id)===String(t.id));
+      }
+      if(!st)return;
+      const map=splitOutstandingMap(st), outstanding=Object.values(map).reduce((s,v)=>s+Math.max(0,num(v)),0);
+      const actions=row.querySelector('.action-row'); if(!actions)return;
+      if(!actions.querySelector('.split-settle-btn')){
+        const b=document.createElement('button');b.type='button';b.className='smallbtn split-settle-btn';b.textContent=outstanding>.009?'Settle':'✓ Settled';b.disabled=outstanding<=.009;b.onclick=()=>settleSplit(st.id);actions.insertBefore(b,actions.firstChild);
+      }
+    });
+  };
+})();
+
+
+/* ===== SPLIT-ONLY PHONEPE MARKER + OWED SPLIT CARD FIX ===== */
+(function(){
+  const KEY='mb_phonepe_split_created_v1';
+  function loadMarks(){try{return JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(e){return {}}}
+  function saveMarks(x){try{localStorage.setItem(KEY,JSON.stringify(x))}catch(e){}}
+  function markSplitCreated(id){
+    const m=loadMarks(); m[String(id)]=true; saveMarks(m); render(); mbToast('Marked as Split Created.');
+  }
+  function undoSplitCreated(id){
+    const m=loadMarks(); delete m[String(id)]; saveMarks(m); render(); mbToast('Split Created mark undone.');
+  }
+  window.markPhonePeSplitCreated=markSplitCreated;
+  window.undoPhonePeSplitCreated=undoSplitCreated;
+
+  // This button is ONLY a reminder/status marker. It does NOT create or modify
+  // a split inside My Budget. The actual split is created separately when needed.
+  const prevTxHTML=window.txHTML;
+  window.txHTML=function(t){
+    let html=prevTxHTML(t);
+    if(t && !t.__special && t.type==='expense'){
+      const id=String(t.id);
+      const marks=loadMarks();
+      const actualSplit=(state.split_transactions||[]).some(s=>String(s.transaction_id)===id);
+      // Remove any older Create Split/Split Created control added by previous patches.
+      html=html.replace(/<button[^>]*class="smallbtn[^"]*"[^>]*(?:onclick="(?:createSplitFromTransaction|markPhonePeSplitCreated)\('[^']+'\)"|disabled)[^>]*>[^<]*(?:Create Split|Split Created)[^<]*<\/button>/g,'');
+      const marked=!!marks[id];
+      const label=marked?'✓ Created':'＋ Create';
+      const btn=marked
+        ? `<button type="button" class="smallbtn" onclick="undoPhonePeSplitCreated('${id.replace(/'/g,"\\'")}')">↶ Undo</button>`
+        : `<button type="button" class="smallbtn" onclick="markPhonePeSplitCreated('${id.replace(/'/g,"\\'")}')">＋ Create</button>`;
+      html=html.replace(/(<div class="action-row">)/,`$1${btn}`);
+    }
+    return html;
+  };
+
+  // Ensure the Split tab is based on actual split records, including splits
+  // where another person paid and the user owes them.
+  const prevSplitList=window.splitListHTML;
+  window.splitListHTML=function(){
+    const el=$('splitList'); if(!el)return;
+    const sts=(state.split_transactions||[]).slice().sort((a,b)=>
+      String(b.created_at||b.transaction_date||'').localeCompare(String(a.created_at||a.transaction_date||'')));
+    if(!sts.length){el.innerHTML='<div class="empty">No split transactions yet.</div>';return;}
+    const rows=sts.map(st=>{
+      const tx=state.transactions.find(t=>String(t.id)===String(st.transaction_id));
+      if(!tx)return '';
+      const payer=st.paid_by_person_id || tx.person_id || '__me__';
+      const people=(state.people||[]);
+      const payerName=payer==='__me__'?'You':(people.find(p=>String(p.id)===String(payer))?.name||'Someone');
+      const myShare=Number(st.my_share||0);
+      const outstanding=(()=> {
+        const sent=(state.reimbursements||[]).filter(r=>String(r.person_id)===String(payer)&&r.direction==='sent').reduce((a,r)=>a+Number(r.amount||0),0);
+        if(payer!=='__me__') return Math.max(0,myShare-sent);
+        return (state.split_participants||[]).filter(p=>String(p.split_transaction_id)===String(st.id)&&p.person_id).reduce((a,p)=>a+Math.max(0,Number(p.amount||0)-Number(p.amount_paid||0)),0);
+      })();
+      const owedText=payer==='__me__'
+        ? `Others owe you · ${money(outstanding)}`
+        : `You owe ${esc(payerName)} · ${money(outstanding)}`;
+      const status=outstanding>.009
+        ? `<button type="button" class="smallbtn split-settle-btn" onclick="settleSplit('${String(st.id).replace(/'/g,"\\'")}')">Settle</button>`
+        : `<button type="button" class="smallbtn" disabled>✓ Settled</button>`;
+      return `<div class="transaction-row split-specific-card">
+        <div class="bubble split mb-tx-icon">÷</div>
+        <div class="tx-content"><div class="name">${esc(tx.description||'Split transaction')}</div>
+        <div class="sub">Split · Total ${money(st.total_amount||tx.amount||0)} · Paid by ${esc(payerName)}</div>
+        <div class="sub">${owedText}</div></div>
+        <div class="action-row">${status}<button type="button" class="smallbtn" onclick="editTransaction('${String(tx.id).replace(/'/g,"\\'")}')">Edit</button></div>
+      </div>`;
+    }).join('');
+    el.innerHTML=rows||'<div class="empty">No split transactions yet.</div>';
+  };
+})();
+
+
+/* ===== Final user-requested Split/People/Progress fixes ===== */
+(function(){
+  // 1) People overview: expose split-only receivable/payable amounts separately.
+  function splitPeopleAmounts(pid){
+    let shouldGet=0, shouldPay=0;
+    const reimb=(state.reimbursements||[]).filter(r=>String(r.person_id)===String(pid));
+    const received=reimb.filter(r=>r.direction!=='sent').reduce((s,r)=>s+Number(r.amount||0),0);
+    const sent=reimb.filter(r=>r.direction==='sent').reduce((s,r)=>s+Number(r.amount||0),0);
+    for(const st of (state.split_transactions||[])){
+      const tx=(state.transactions||[]).find(t=>String(t.id)===String(st.transaction_id));
+      if(!tx) continue;
+      const payer=typeof window.splitPayerForSplit==='function' ? window.splitPayerForSplit(st) : (st.paid_by_person_id||tx.person_id||'__me__');
+      if(payer==='__me__'){
+        // This person owes their participant share to me.
+        const part=(state.split_participants||[]).find(x=>String(x.split_transaction_id)===String(st.id)&&String(x.person_id)===String(pid));
+        if(part) shouldGet += Math.max(0,Number(part.amount||0)-Number(part.amount_paid||0));
+      } else if(String(payer)===String(pid)){
+        // I owe this person my share.
+        shouldPay += Math.max(0,Number(st.my_share||0));
+      }
+    }
+    // Reimbursements are applied against the corresponding split direction.
+    shouldGet=Math.max(0,shouldGet-received);
+    shouldPay=Math.max(0,shouldPay-sent);
+    return {shouldGet,shouldPay};
+  }
+  window.__splitPeopleAmounts=splitPeopleAmounts;
+
+  const oldPeopleBalances=window.peopleBalances;
+  if(typeof oldPeopleBalances==='function'){
+    window.peopleBalances=function(){
+      return oldPeopleBalances().map(p=>{
+        const x=splitPeopleAmounts(p.id);
+        return {...p,splitShouldGet:x.shouldGet,splitShouldPay:x.shouldPay};
+      });
+    };
+  }
+
+  // Add explicit split-only figures to the People overview cards.
+  const oldPersonHTML=window.personHTML;
+  if(typeof oldPersonHTML==='function'){
+    window.personHTML=function(p){
+      let html=oldPersonHTML(p);
+      const x=splitPeopleAmounts(p.id);
+      const block=`<div class="person-split-only" style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;font-size:12px"><span class="split-get">Split you should get: <b>${money(x.shouldGet)}</b></span><span class="split-pay">Split you owe: <b>${money(x.shouldPay)}</b></span></div>`;
+      html=html.replace(/(<div class="sub">)/,`$1${block}`);
+      return html;
+    };
+  }
+
+  // 2) PhonePe Create marker belongs ONLY to actual Split cards, never All Transactions.
+  const oldTxHTML=window.txHTML;
+  if(typeof oldTxHTML==='function'){
+    window.txHTML=function(t){
+      let html=oldTxHTML(t);
+      // Remove any legacy PhonePe create/created marker from All Transactions.
+      return html.replace(/<button[^>]*class="smallbtn[^\"]*"[^>]*(?:onclick="(?:createSplitFromTransaction|markPhonePeSplitCreated)\('[^']+'\)"|disabled)[^>]*>[^<]*(?:Create Split|Split Created|＋ Create|✓ Created|↶ Undo)[^<]*<\/button>/gi,'');
+    };
+  }
+
+  // 3) Rebuild Split cards with PhonePe marker + actual settlement status.
+  window.splitListHTML=function(){
+    const el=document.getElementById('splitList'); if(!el)return;
+    const sts=(state.split_transactions||[]).slice().sort((a,b)=>String(b.created_at||b.transaction_date||'').localeCompare(String(a.created_at||a.transaction_date||'')));
+    if(!sts.length){el.innerHTML='<div class="empty">No split transactions yet.</div>';return;}
+    const marks=JSON.parse(localStorage.getItem('mb_phonepe_split_created')||'{}');
+    const rows=sts.map(st=>{
+      const tx=(state.transactions||[]).find(t=>String(t.id)===String(st.transaction_id)); if(!tx)return '';
+      const payer=typeof window.splitPayerForSplit==='function'?window.splitPayerForSplit(st):(st.paid_by_person_id||tx.person_id||'__me__');
+      const people=state.people||[];
+      const payerName=payer==='__me__'?'You':(people.find(p=>String(p.id)===String(payer))?.name||'Someone');
+      let outstanding=0;
+      if(payer!=='__me__'){
+        const sent=(state.reimbursements||[]).filter(r=>String(r.person_id)===String(payer)&&r.direction==='sent').reduce((a,r)=>a+Number(r.amount||0),0);
+        outstanding=Math.max(0,Number(st.my_share||0)-sent);
+      }else{
+        const parts=(state.split_participants||[]).filter(p=>String(p.split_transaction_id)===String(st.id)&&p.person_id);
+        const received=(state.reimbursements||[]).filter(r=>r.person_id&&r.direction!=='sent').reduce((a,r)=>a+Number(r.amount||0),0);
+        // For the card, participant amount_paid is preferred; reimbursements are handled by existing settlement logic.
+        outstanding=parts.reduce((a,p)=>a+Math.max(0,Number(p.amount||0)-Number(p.amount_paid||0)),0);
+      }
+      const phoneKey=String(st.id);
+      const created=!!marks[phoneKey];
+      const phoneBtn=created
+        ? `<button type="button" class="smallbtn" onclick="undoPhonePeSplitCreated('${phoneKey.replace(/'/g,"\\'")}')">↶ Undo</button>`
+        : `<button type="button" class="smallbtn" onclick="markPhonePeSplitCreated('${phoneKey.replace(/'/g,"\\'")}')">＋ Create</button>`;
+      const settle=outstanding>.009
+        ? `<button type="button" class="smallbtn split-settle-btn" onclick="settleSplit('${String(st.id).replace(/'/g,"\\'")}')">Settle</button>`
+        : `<button type="button" class="smallbtn" disabled>✓ Settled</button>`;
+      return `<div class="transaction-row split-specific-card"><div class="bubble split mb-tx-icon">÷</div><div class="tx-content"><div class="name">${esc(tx.description||'Split transaction')}</div><div class="sub">Split · Total ${money(st.total_amount||tx.amount||0)} · Paid by ${esc(payerName)}</div><div class="sub">${payer==='__me__'?'Others owe you':'You owe '+esc(payerName)} · ${money(outstanding)}</div></div><div class="action-row">${phoneBtn}${settle}<button type="button" class="smallbtn" onclick="editSplit('${String(st.id).replace(/'/g,"\\'")}')">Edit</button></div></div>`;
+    }).join('');
+    el.innerHTML=rows||'<div class="empty">No split transactions yet.</div>';
+  };
+
+  // 4) Exact requested budget progress thresholds: <50 blue, 50-100 orange, >100 red.
+  const style=document.createElement('style');
+  style.textContent=`
+    .budget-progress-line .bar.budget-blue{background:#2196f3!important}
+    .budget-progress-line .bar.budget-orange{background:#ff9800!important}
+    .budget-progress-line .bar.budget-red{background:#f44336!important}
+    .budget-progress-line .badge.status-budget-blue{color:#2196f3!important}
+    .budget-progress-line .badge.status-budget-orange{color:#ff9800!important}
+    .budget-progress-line .badge.status-budget-red{color:#f44336!important}
+    .person-split-only .split-get{color:#168a45}.person-split-only .split-pay{color:#c62828}
+  `;
+  document.head.appendChild(style);
+  const oldBudgetHTML=window.budgetHTML;
+  if(typeof oldBudgetHTML==='function'){
+    window.budgetHTML=function(b){
+      const html=oldBudgetHTML(b);
+      const tmp=document.createElement('div');tmp.innerHTML=html;
+      const pctEl=tmp.querySelector('.budget-progress-line .badge');
+      const bar=tmp.querySelector('.budget-progress-line .bar');
+      const pct=pctEl?parseFloat(pctEl.textContent):0;
+      const cls=pct>100?'budget-red':pct>=50?'budget-orange':'budget-blue';
+      if(bar){bar.classList.remove('good','near','over');bar.classList.add(cls)}
+      if(pctEl){pctEl.classList.remove('status-good','status-near','status-over');pctEl.classList.add('status-'+cls)}
+      return tmp.innerHTML;
+    };
+  }
+})();
+
+/* ===== Final DOM application for People cards + Budget progress thresholds ===== */
+(function(){
+  const _rp=window.renderPeople;
+  if(typeof _rp==='function') window.renderPeople=function(){
+    _rp();
+    try{
+      const wrap=document.getElementById('peopleOverview'); if(!wrap)return;
+      const ps=(typeof v5Ordered==='function'?v5Ordered(peopleBalances(),'people'):peopleBalances());
+      const cards=wrap.querySelectorAll('.row,.contact-row');
+      cards.forEach((card,i)=>{
+        const p=ps[i]; if(!p)return;
+        const x=window.__splitPeopleAmounts?p?window.__splitPeopleAmounts(p.id):{shouldGet:0,shouldPay:0}:{shouldGet:0,shouldPay:0};
+        let el=card.querySelector('.person-split-only');
+        if(!el){el=document.createElement('div');el.className='person-split-only';el.style.cssText='margin-top:6px;display:flex;gap:10px;flex-wrap:wrap;font-size:12px';const anchor=card.querySelector('.sub')||card.querySelector('.name');if(anchor)anchor.parentElement.appendChild(el);}
+        el.innerHTML=`<span class="split-get">Split you should get: <b>${money(x.shouldGet)}</b></span><span class="split-pay">Split you owe: <b>${money(x.shouldPay)}</b></span>`;
+      });
+    }catch(e){}
+  };
+  const _rb=window.renderBudgets;
+  if(typeof _rb==='function') window.renderBudgets=function(){
+    _rb();
+    try{
+      document.querySelectorAll('#budgetList .budget-progress-line').forEach(line=>{
+        const badge=line.querySelector('.badge'); const bar=line.querySelector('.bar');
+        const pct=parseFloat((badge?.textContent||'0').replace('%',''))||0;
+        const cls=pct>100?'budget-red':pct>=50?'budget-orange':'budget-blue';
+        if(bar){bar.classList.remove('good','near','over','budget-red','budget-orange','budget-blue');bar.classList.add(cls)}
+        if(badge){badge.classList.remove('status-good','status-near','status-over','status-budget-red','status-budget-orange','status-budget-blue');badge.classList.add('status-'+cls)}
+      });
+    }catch(e){}
+  };
+})();
+
+/* ===== FINAL SPLIT-ONLY PEOPLE + PHONEPE CREATE MARKER FIX ===== */
+(function(){
+  const num=v=>{const n=Number(v);return Number.isFinite(n)?n:0};
+
+  // Always prefer the explicit Split payer, then the legacy transaction person_id.
+  // This fixes older/newer split records being interpreted as "paid by me".
+  window.splitPayerForSplit=function(st){
+    if(!st) return '__me__';
+    if(st.paid_by_person_id && String(st.paid_by_person_id)!=='__me__') return String(st.paid_by_person_id);
+    const tx=(state.transactions||[]).find(t=>String(t.id)===String(st.transaction_id));
+    return tx?.person_id ? String(tx.person_id) : '__me__';
+  };
+
+  // Recalculate the split-only receivable/payable figures for People cards.
+  window.__splitPeopleAmountsFinal=function(pid){
+    let shouldGet=0, shouldPay=0;
+    const received=(state.reimbursements||[])
+      .filter(r=>String(r.person_id)===String(pid) && r.direction!=='sent')
+      .reduce((s,r)=>s+num(r.amount),0);
+    const sent=(state.reimbursements||[])
+      .filter(r=>String(r.person_id)===String(pid) && r.direction==='sent')
+      .reduce((s,r)=>s+num(r.amount),0);
+
+    for(const st of (state.split_transactions||[])){
+      const payer=window.splitPayerForSplit(st);
+      if(payer==='__me__'){
+        const share=(state.split_participants||[])
+          .filter(p=>String(p.split_transaction_id)===String(st.id) && String(p.person_id)===String(pid))
+          .reduce((s,p)=>s+num(p.amount),0);
+        const paid=(state.split_participants||[])
+          .filter(p=>String(p.split_transaction_id)===String(st.id) && String(p.person_id)===String(pid))
+          .reduce((s,p)=>s+num(p.amount_paid),0);
+        shouldGet += Math.max(0,share-paid);
+      } else if(String(payer)===String(pid)) {
+        shouldPay += Math.max(0,num(st.my_share));
+      }
+    }
+    return {
+      shouldGet:Math.max(0,shouldGet-received),
+      shouldPay:Math.max(0,shouldPay-sent)
+    };
+  };
+
+  // Patch the People calculation used by all People overview renderers.
+  const oldPB=window.peopleBalances;
+  if(typeof oldPB==='function'){
+    window.peopleBalances=function(){
+      return oldPB().map(p=>{
+        const x=window.__splitPeopleAmountsFinal(p.id);
+        return {...p,splitShouldGet:x.shouldGet,splitShouldPay:x.shouldPay};
+      });
+    };
+  }
+
+  // Ensure the visible People cards always show the split-only amounts.
+  const oldRP=window.renderPeople;
+  if(typeof oldRP==='function'){
+    window.renderPeople=function(){
+      oldRP();
+      try{
+        const root=document.getElementById('peopleOverview')||document.getElementById('peopleList');
+        if(!root)return;
+        const ps=(typeof v5Ordered==='function'?v5Ordered(peopleBalances(),'people'):peopleBalances());
+        const cards=root.querySelectorAll('.row,.contact-row');
+        cards.forEach((card,i)=>{
+          const p=ps[i]; if(!p)return;
+          const x=window.__splitPeopleAmountsFinal(p.id);
+          let el=card.querySelector('.person-split-only');
+          if(!el){
+            el=document.createElement('div');el.className='person-split-only';
+            el.style.cssText='margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;font-size:12px';
+            const anchor=card.querySelector('.sub')||card.querySelector('.name');
+            if(anchor&&anchor.parentElement)anchor.parentElement.appendChild(el);
+          }
+          el.innerHTML=`<span class="split-get" style="color:#168a45">Split you should get: <b>${money(x.shouldGet)}</b></span><span class="split-pay" style="color:#c62828">Split you owe: <b>${money(x.shouldPay)}</b></span>`;
+        });
+      }catch(e){console.warn('People split summary render:',e)}
+    };
+  }
+
+  // PhonePe marker is ONLY for actual Split transaction rows in the Transactions tab.
+  // It never appears on ordinary income/expense/transfer/etc. transactions.
+  const MARKKEY='mb_phonepe_split_created_v1';
+  function marks(){try{return JSON.parse(localStorage.getItem(MARKKEY)||'{}')||{}}catch(e){return {}}}
+  function saveMarks(m){try{localStorage.setItem(MARKKEY,JSON.stringify(m))}catch(e){}}
+  window.markPhonePeSplitCreated=function(id){const m=marks();m[String(id)]=true;saveMarks(m);render();mbToast('Marked as Split Created.')};
+  window.undoPhonePeSplitCreated=function(id){const m=marks();delete m[String(id)];saveMarks(m);render();mbToast('Split Created mark undone.')};
+
+  // Final txHTML wrapper: add the Create/Undo marker only to actual split cards.
+  const oldTx=window.txHTML;
+  if(typeof oldTx==='function'){
+    window.txHTML=function(t){
+      let html=oldTx(t);
+      if(!t || t.__special!=='split') return html;
+      const st=(state.split_transactions||[]).find(s=>String(s.id)===String(t.__specialId));
+      if(!st)return html;
+      const id=String(st.id), m=marks(), created=!!m[id];
+      const btn=created
+        ? `<button type="button" class="smallbtn split-phonepe-created" onclick="undoPhonePeSplitCreated('${id.replace(/'/g,"\\'")}')">↶ Undo</button>`
+        : `<button type="button" class="smallbtn split-phonepe-create" onclick="markPhonePeSplitCreated('${id.replace(/'/g,"\\'")}')">＋ Create</button>`;
+      // Prevent duplicate marker if an earlier layer already inserted one.
+      html=html.replace(/<button[^>]*class="smallbtn[^>]*>(?:＋ Create|✓ Created|↶ Undo)<\/button>/g,'');
+      html=html.replace(/(<div class="action-row">)/,`$1${btn}`);
+      return html;
+    };
+  }
+
+  const st=document.createElement('style');
+  st.textContent=`
+    .split-phonepe-create,.split-phonepe-created{white-space:nowrap}
+    .person-split-only{line-height:1.25}
+  `;
+  document.head.appendChild(st);
+})();
+
+
+/* ===== FINAL SPLIT SETTLEMENT + PEOPLE "YOU OWE" + TRANSACTIONS CREATE MARKER FIX ===== */
+(function(){
+  const num=v=>{const n=Number(v);return Number.isFinite(n)?n:0};
+  const r2=v=>Math.round(v*100)/100;
+  const fix=v=>{const x=r2(v);return x<0.01?0:x};
+
+  // Who paid a split: explicit split payer first, then the linked transaction's person_id.
+  const payerOf=st=>{
+    if(!st)return '__me__';
+    if(st.paid_by_person_id&&String(st.paid_by_person_id)!=='__me__')return String(st.paid_by_person_id);
+    const tx=(state.transactions||[]).find(t=>String(t.id)===String(st.transaction_id));
+    return tx&&tx.person_id?String(tx.person_id):'__me__';
+  };
+
+  // Single source of truth for "how much is still unsettled".
+  // Repayments are stored per person (reimbursements), so they are applied oldest split first:
+  //  - split paid by me      : received repayments reduce what each person still owes me
+  //  - split paid by someone : repayments I sent reduce what I still owe that person
+  // Only splits paid by me create receivables; a payer's own participant row is never counted as owed to me.
+  function settlement(){
+    const txById=new Map((state.transactions||[]).map(t=>[String(t.id),t]));
+    const partsBySplit=new Map();
+    for(const p of (state.split_participants||[])){const k=String(p.split_transaction_id);if(!partsBySplit.has(k))partsBySplit.set(k,[]);partsBySplit.get(k).push(p)}
+    const dateOf=st=>String(txById.get(String(st.transaction_id))?.transaction_date||st.created_at||'').slice(0,10);
+    const order=(a,b)=>dateOf(a).localeCompare(dateOf(b))||String(a.created_at||'').localeCompare(String(b.created_at||''))||String(a.id).localeCompare(String(b.id));
+    const info=new Map(), byPerson={}, recvRows={}, payRows={};
+    const P=pid=>byPerson[pid]||(byPerson[pid]={get:0,gross:0,pay:0});
+    for(const st of (state.split_transactions||[]).slice().sort(order)){
+      const payer=payerOf(st), entry={st,payer,outstanding:0,people:{}};
+      info.set(String(st.id),entry);
+      if(payer==='__me__'){
+        for(const p of (partsBySplit.get(String(st.id))||[])){if(p.person_id)(recvRows[p.person_id]||(recvRows[p.person_id]=[])).push({p,entry})}
+      }else if(num(st.my_share)>0){
+        (payRows[payer]||(payRows[payer]=[])).push({entry});
+      }
+    }
+    const reimb=state.reimbursements||[];
+    const sumFor=(pid,sent)=>reimb.filter(r=>String(r.person_id)===String(pid)&&((r.direction==='sent')===sent)).reduce((s,r)=>s+num(r.amount),0);
+    for(const pid of Object.keys(recvRows)){
+      let pool=sumFor(pid,false);
+      for(const {p,entry} of recvRows[pid]){
+        const base=Math.max(0,num(p.amount)-num(p.amount_paid)), used=Math.min(base,pool); pool-=used;
+        const left=fix(base-used);
+        entry.people[pid]=(entry.people[pid]||0)+left; entry.outstanding+=left;
+        P(pid).get+=left; P(pid).gross+=num(p.amount);
+      }
+    }
+    for(const pid of Object.keys(payRows)){
+      let pool=sumFor(pid,true);
+      for(const {entry} of payRows[pid]){
+        const base=num(entry.st.my_share), used=Math.min(base,pool); pool-=used;
+        const left=fix(base-used);
+        entry.people[pid]=left; entry.outstanding=left; P(pid).pay+=left;
+      }
+    }
+    return {info,byPerson};
+  }
+  window.mbSplitSettlement=settlement;
+
+  /* ---------- People: balances, cards, overview summary ---------- */
+  const basePB=window.peopleBalances;
+  if(typeof basePB==='function'){
+    window.peopleBalances=function(){
+      const S=settlement();
+      return basePB().map(p=>{
+        const x=S.byPerson[p.id]||{get:0,gross:0,pay:0};
+        return {...p,
+          balance:x.get+num(p.loanOwed), iOwe:x.pay+num(p.loanIowe),
+          splitPending:x.get, splitSettled:Math.max(0,x.gross-x.get), splitPayable:x.pay,
+          splitShouldGet:x.get, splitShouldPay:x.pay};
+      });
+    };
+  }
+  // Older display patches read these helpers; make them use the same numbers.
+  const legacyAmounts=pid=>{const x=settlement().byPerson[pid]||{get:0,pay:0};return {shouldGet:x.get,shouldPay:x.pay}};
+  window.__splitPeopleAmounts=legacyAmounts;
+  window.__splitPeopleAmountsFinal=legacyAmounts;
+
+  window.personHTML=function(p){
+    return `<div class="person-card"><div class="row"><div class="left"><div class="bubble person">${otherPersonIcon()}</div><div><div class="name">${esc(p.name)}</div></div></div><div class="action-row"><button class="smallbtn" onclick="editPerson('${p.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deletePerson('${p.id}')">Delete</button></div></div><div class="person-metrics"><span>Split pending <b>${money(p.splitPending)}</b></span><span>Split you owe <b>${money(p.splitPayable)}</b></span><span>Split repaid <b>${money(p.totalRepaid)}</b></span><span>Held pending <b>${money(p.heldPending)}</b></span><span>Held settled <b>${money(p.heldSettled)}</b></span><span>Lent outstanding <b>${money(p.loanOwed)}</b></span><span>Borrowed outstanding <b>${money(p.loanIowe)}</b></span><span>Loan received <b>${money(p.loanReceived)}</b></span><span>Loan repaid <b>${money(p.loanSent)}</b></span></div></div>`;
+  };
+
+  const baseRP=window.renderPeople;
+  if(typeof baseRP==='function'){
+    window.renderPeople=function(){
+      baseRP();
+      // Older patches re-inject a "Split you should get / Split you owe" line into every card
+      // (by position, so it landed on the wrong person when cards were re-ordered). The metrics below
+      // already show these figures, so remove that line.
+      document.querySelectorAll('#peopleOverview .person-split-only').forEach(e=>e.remove());
+      try{
+        const el=document.getElementById('peopleSummary'); if(!el)return;
+        const ps=window.peopleBalances(), sum=k=>ps.reduce((s,p)=>s+num(p[k]),0);
+        const splitPending=sum('splitPending'),splitPay=sum('splitPayable'),splitSettled=sum('splitSettled'),
+              heldPending=sum('heldPending'),heldSettled=sum('heldSettled'),lend=sum('loanOwed'),borrow=sum('loanIowe');
+        el.innerHTML=`<div class="people-summary-grid"><div><span>Split pending (you get)</span><b class="amber">${money(splitPending)}</b></div><div><span>Split you owe</span><b class="red">${money(splitPay)}</b></div><div><span>Split settled</span><b class="green">${money(splitSettled)}</b></div><div><span>Money held</span><b class="amber">${money(heldPending)}</b></div><div><span>Held settled (total)</span><b class="green">${money(heldSettled)}</b></div><div><span>Loans: they owe you</span><b class="green">${money(lend)}</b></div><div><span>Loans: you owe</span><b class="red">${money(borrow)}</b></div><div><span>To receive</span><b class="green">${money(splitPending+lend)}</b></div><div><span>To pay</span><b class="red">${money(splitPay+borrow)}</b></div><div><span>Total people</span><b>${ps.length}</b></div></div>`;
+      }catch(e){console.warn('People summary render:',e)}
+    };
+  }
+
+  // Home page "people" tiles: same settlement-aware numbers, and To pay includes split amounts you owe.
+  const baseRH=window.renderHome;
+  if(typeof baseRH==='function'){
+    window.renderHome=function(){
+      baseRH.apply(this,arguments);
+      try{
+        const el=document.getElementById('homePeopleStats'); if(!el)return;
+        const ps=window.peopleBalances(), sum=k=>ps.reduce((s,p)=>s+num(p[k]),0);
+        const splitPending=sum('splitPending'),splitPay=sum('splitPayable'),lend=sum('loanOwed'),borrow=sum('loanIowe');
+        const held=typeof moneyHeldOutstanding==='function'?moneyHeldOutstanding():0;
+        el.innerHTML=`<div class="split"><span>Split pending</span><b>${money(splitPending)}</b></div><div class="held"><span>Money held</span><b>${money(held)}</b></div><div class="lend"><span>They owe you</span><b>${money(lend)}</b></div><div class="owe"><span>You owe</span><b>${money(borrow)}</b></div><div class="receivable"><span>To receive</span><b>${money(splitPending+lend)}</b></div><div class="payable"><span>To pay</span><b>${money(splitPay+borrow)}</b></div>`;
+      }catch(e){console.warn('Home people stats render:',e)}
+    };
+  }
+
+  /* ---------- "Create" marker (one shared state for Split tab + Transactions tab) ---------- */
+  const MARK_KEY='mb_phonepe_split_created_v1', OLD_KEY='mb_phonepe_split_created';
+  const readKey=k=>{try{return JSON.parse(localStorage.getItem(k)||'{}')||{}}catch(e){return {}}};
+  const marks=()=>({...readKey(OLD_KEY),...readKey(MARK_KEY)});
+  const saveMarks=m=>{try{localStorage.setItem(MARK_KEY,JSON.stringify(m));localStorage.removeItem(OLD_KEY)}catch(e){}};
+  window.markPhonePeSplitCreated=function(id){const m=marks();m[String(id)]=true;saveMarks(m);render();mbToast('Marked as Split Created.')};
+  window.undoPhonePeSplitCreated=function(id){const m=marks();delete m[String(id)];saveMarks(m);render();mbToast('Split Created mark undone.')};
+  const markerBtn=stId=>{
+    const id=String(stId).replace(/'/g,"\\'");
+    return marks()[String(stId)]
+      ? `<button type="button" class="smallbtn split-phonepe-created" data-split-marker="1" onclick="undoPhonePeSplitCreated('${id}')">↶ Undo</button>`
+      : `<button type="button" class="smallbtn split-phonepe-create" data-split-marker="1" onclick="markPhonePeSplitCreated('${id}')">＋ Create</button>`;
+  };
+
+  // Transactions tab only: split rows get the same Create / Undo button as the Split tab.
+  const baseRT=window.renderTransactions;
+  if(typeof baseRT==='function'){
+    window.renderTransactions=function(){
+      window.__mbInTxTab=true;
+      try{return baseRT.apply(this,arguments)}finally{window.__mbInTxTab=false}
+    };
+  }
+  const baseTx=window.txHTML;
+  window.txHTML=function(t){
+    const html=baseTx.apply(this,arguments);
+    if(!window.__mbInTxTab||!t||html.includes('data-split-marker'))return html;
+    let st=null;
+    if(t.__special==='split')st=(state.split_transactions||[]).find(s=>String(s.id)===String(t.__specialId));
+    else if(t.type==='split'&&!t.__special)st=(state.split_transactions||[]).find(s=>String(s.transaction_id)===String(t.id));
+    if(!st)return html;
+    return html.replace(/(<div class="action-row">)/,`$1${markerBtn(st.id)}`);
+  };
+
+  /* ---------- Saved card order (same storage the other sortable tabs use) ---------- */
+  const orderKey=k=>`mybudget_sort_v5_${(window.user&&window.user.id)||'local'}_${k}`;
+  const loadOrder=k=>{try{const o=JSON.parse(localStorage.getItem(orderKey(k))||'[]');return Array.isArray(o)?o.map(String):[]}catch(e){return []}};
+  // Items never sorted before (e.g. a brand-new split) come first, in their natural order; sorted items keep their saved order.
+  const applyOrder=(items,k,freshFirst)=>{
+    const rank=new Map(loadOrder(k).map((id,i)=>[id,i]));
+    const known=items.filter(x=>rank.has(String(x.id))).sort((a,b)=>rank.get(String(a.id))-rank.get(String(b.id)));
+    const fresh=items.filter(x=>!rank.has(String(x.id)));
+    return freshFirst?fresh.concat(known):known.concat(fresh);
+  };
+
+  /* ---------- Split tab cards + Settle button (sortable again, same settlement numbers as People/Budget) ---------- */
+  window.splitListHTML=function(){
+    const el=document.getElementById('splitList'); if(!el)return;
+    const S=settlement();
+    const rows=(state.split_transactions||[]).slice().sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')))
+      .map(st=>({id:(state.transactions||[]).find(t=>String(t.id)===String(st.transaction_id))?.id,st}))
+      .filter(x=>x.id!==undefined);
+    if(!rows.length){el.innerHTML='<div class="empty">No split transactions yet.</div>';return}
+    // Cards are keyed by the linked transaction id, exactly like earlier builds, so previously saved orders still apply.
+    el.innerHTML=applyOrder(rows,'split',true).map(({st})=>{
+      const tx=(state.transactions||[]).find(t=>String(t.id)===String(st.transaction_id));
+      const e=S.info.get(String(st.id))||{payer:payerOf(st),outstanding:0};
+      const payerName=e.payer==='__me__'?'You':(personName(e.payer)||'Someone');
+      const q=String(st.id).replace(/'/g,"\\'");
+      const settle=e.outstanding>.009
+        ? `<button type="button" class="smallbtn split-settle-btn" onclick="settleSplit('${q}')">Settle</button>`
+        : `<button type="button" class="smallbtn" disabled>✓ Settled</button>`;
+      const inner=`<div class="row transaction-row split-specific-card"><div class="left"><div class="bubble split mb-tx-icon">÷</div><div class="tx-content"><div class="name">${esc(tx.description||'Split transaction')}</div><div class="sub">Split · Total ${money(st.total_amount||tx.amount||0)} · Paid by ${esc(payerName)}</div><div class="sub">${e.payer==='__me__'?'Others owe you':'You owe '+esc(payerName)} · ${money(e.outstanding)}</div></div></div><div class="action-row">${markerBtn(st.id)}${settle}<button type="button" class="smallbtn" onclick="editSplitSpecial('${q}')">Edit</button></div></div>`;
+      return typeof window.mbV5Card==='function'?window.mbV5Card(tx.id,inner,'split','#splitList','splitListHTML'):inner;
+    }).join('');
+    if(typeof window.mbV5BindDrag==='function')window.mbV5BindDrag('split','#splitList','splitListHTML');
+  };
+
+  window.settleSplit=function(splitId){
+    const e=settlement().info.get(String(splitId)); if(!e)return;
+    const opts=Object.entries(e.people).filter(([,v])=>v>.009);
+    if(!opts.length)return mbToast('This split is already settled.');
+    const isMe=e.payer==='__me__', defaultPid=isMe?opts[0][0]:e.payer, direction=isMe?'received':'sent';
+    const desc=(state.transactions||[]).find(t=>String(t.id)===String(e.st.transaction_id))?.description||'Shared expense';
+    openModal('repayment',{person_id:defaultPid,amount:opts[0][1],reimbursement_direction:direction,reimbursement_date:today(),transaction_date:today(),account_id:'',notes:`Settlement for split: ${desc}`});
+    const f=$('f'); if(!f)return;
+    const psel=f.elements.person_id, amt=f.elements.amount;
+    if(psel&&isMe){
+      psel.innerHTML=opts.map(([pid,v])=>`<option value="${esc(pid)}">${esc(personName(pid))} · ${money(v)} outstanding</option>`).join('');
+      psel.value=defaultPid;
+      if(amt)amt.value=String(opts[0][1].toFixed(2));
+      psel.onchange=()=>{const v=Number(e.people[psel.value]||0);if(amt)amt.value=v.toFixed(2)};
+    }
+    const dir=f.elements.reimbursement_direction; if(dir){dir.value=direction;dir.dispatchEvent(new Event('change'))}
+  };
+
+  // Splits whose payer was stored only in split_transactions.paid_by_person_id (transaction.person_id empty)
+  // were invisible to the repayment check ("cannot exceed outstanding ₹0"). Make the payer visible to it
+  // for the duration of the save.
+  const baseSave=window.saveModal;
+  window.saveModal=async function(type,data,f){
+    if(type!=='repayment'&&type!=='repaymentEdit')return baseSave.apply(this,arguments);
+    const patched=[];
+    for(const st of (state.split_transactions||[])){
+      const pid=st.paid_by_person_id;
+      if(!pid||String(pid)==='__me__')continue;
+      const tx=(state.transactions||[]).find(t=>String(t.id)===String(st.transaction_id));
+      if(tx&&!tx.person_id){tx.person_id=pid;patched.push(tx)}
+    }
+    try{return await baseSave.apply(this,arguments)}
+    finally{patched.forEach(tx=>{tx.person_id=null})}
+  };
+})();
+
+
+/* ===== FINAL: Categories list is sortable again (parents + subcategories) ===== */
+(function(){
+  const okey=k=>`mybudget_sort_v5_${(window.user&&window.user.id)||'local'}_${k}`;
+  const load=k=>{try{const o=JSON.parse(localStorage.getItem(okey(k))||'[]');return Array.isArray(o)?o.map(String):[]}catch(e){return []}};
+  const ordered=(items,k)=>{const r=new Map(load(k).map((id,i)=>[id,i]));return items.slice().sort((a,b)=>(r.has(String(a.id))?r.get(String(a.id)):999999)-(r.has(String(b.id))?r.get(String(b.id)):999999))};
+  const safe=id=>String(id).replace(/[^a-zA-Z0-9_-]/g,'');
+  const nav=`<div class="mb-v5-nav"><span class="mb-v5-handle" title="Long press and drag">☷</span><button type="button" class="smallbtn mb-v5-btn" data-sort-dir="-1" title="Move up" aria-label="Move up">↑</button><button type="button" class="smallbtn mb-v5-btn" data-sort-dir="1" title="Move down" aria-label="Move down">↓</button></div>`;
+  function listHTML(){
+    const cats=state.categories||[];
+    const rows=ordered(cats.filter(c=>!c.parent_id),'categories_parents').map(p=>{
+      const subKey='categories_sub_'+p.id, sel='#catgrp-'+safe(p.id);
+      const subs=ordered(cats.filter(c=>c.parent_id===p.id),subKey).map(c=>`<div class="mb-v5-sub-card" data-sort-id="${esc(c.id)}" data-sort-key="${esc(subKey)}" data-sort-selector="${esc(sel)}" data-sort-render="mbRerenderCategoryList">${nav}<div class="tree"><div class="row"><div><div class="name">↳ ${esc(c.name)}</div><div class="sub">${esc(c.type)} · subcategory</div></div><div class="action-row"><button type="button" class="smallbtn" onclick="editCategory('${c.id}')">Edit</button><button type="button" class="smallbtn dangerbtn" onclick="deleteCategory('${c.id}')">Delete</button></div></div></div></div>`).join('');
+      const inner=`<div class="row"><div class="left"><div class="bubble">${esc(p.icon||'🏷️')}</div><div><div class="name">${esc(p.name)}</div><div class="sub">${esc(p.type)} · parent</div><div id="catgrp-${safe(p.id)}">${subs}</div></div></div><div class="action-row"><button type="button" class="smallbtn" onclick="editCategory('${p.id}')">Edit</button><button type="button" class="smallbtn dangerbtn" onclick="deleteCategory('${p.id}')">Delete</button></div></div>`;
+      return window.mbV5Card(p.id,inner,'categories_parents','#mbCategoryParentListV5','mbRerenderCategoryList');
+    }).join('');
+    return `<div class="card-title-row" style="margin-bottom:8px"><h2 style="margin:0">Categories</h2><button type="button" class="smallbtn" onclick="window.mbOpenNewCategoryForm()">＋ New category</button></div><div class="sub" style="margin-bottom:8px">Use ↑ ↓ (or long-press and drag) to arrange parents and subcategories.</div>${rows?`<div id="mbCategoryParentListV5">${rows}</div>`:'<div class="empty">No categories yet. Tap “＋ New category” to add one.</div>'}`;
+  }
+  window.mbRerenderCategoryList=function(){
+    const body=document.getElementById('modalBody'), scrollers=[body,body&&body.parentElement,document.getElementById('modal')].filter(Boolean), tops=scrollers.map(x=>x.scrollTop);
+    openModalRaw(listHTML());
+    scrollers.forEach((x,i)=>{x.scrollTop=tops[i]});
+    window.mbV5BindDrag('categories_parents','#mbCategoryParentListV5','mbRerenderCategoryList');
+    (state.categories||[]).filter(c=>!c.parent_id).forEach(p=>window.mbV5BindDrag('categories_sub_'+p.id,'#catgrp-'+safe(p.id),'mbRerenderCategoryList'));
+  };
+  window.mbShowCategoryList=window.mbRerenderCategoryList;
+})();

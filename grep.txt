@@ -1,0 +1,120 @@
+2889:    if(t.__special==='held_settlement')return `<button class="smallbtn" onclick="editMoneyHeld('${t.__specialId}',true)">Edit</button><button class="smallbtn" onclick="toggleMoneyHeld('${t.__specialId}')">Undo</button>`;
+2892:    if(t.__special==='split')return `<button class="smallbtn" onclick="editSplitSpecial('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteSplitSpecial('${t.__specialId}')">Delete</button>`;
+2899:    else if(t.__special==='held'){icon='⏳';cls='income';meta=`Money Held · Received · ${t.status==='settled'?'Settled':'Pending'} · ${personName(t.person_id)}`;}
+2900:    else if(t.__special==='held_settlement'){icon='−';cls='expense';meta=`Money Held · Paid/Settled · ${personName(t.person_id)}`;}
+2901:    else if(t.__special==='split'){icon='÷';cls='split';const st=state.split_transactions.find(x=>x.id===t.__specialId);const payer=st?payerForSplit(st):'__me__';meta=`Split · Paid by ${payer==='__me__'?'Me':personName(payer)} · Your share ${money(st?.my_share||0)}`;}
+2910:    const balance=bal?`<div class="sub tx-account-balance"><b>Balance after transaction</b>: ${bal}</div>`:(t.__special==='split'&&!t.account_id?`<div class="sub tx-account-balance"><b>Account balance</b>: unchanged — paid by someone else</div>`:'');
+2911:    const sign=t.__special==='held_settlement'?'−':((t.__special==='loan'&&t.direction==='lend')||(t.__special==='loan_repayment'&&t.direction==='sent')?'-':(t.__special==='loan'&&t.direction==='borrow')||(t.__special==='loan_repayment'&&t.direction==='received')?'+':(t.type==='income'||t.type==='reimbursement'?'+':t.type==='expense'||t.type==='split'?'−':''));
+2915:    const active=mbFilter.type||'All',kind=mbFilter.kind||'all',types=['All','income','expense','transfer','split','reimbursement'];
+2927:    if(mbFilter.person)arr=arr.filter(t=>t.person_id===mbFilter.person||(!t.__special&&state.split_participants.some(x=>x.person_id===mbFilter.person&&state.split_transactions.some(st=>st.id===x.split_transaction_id&&st.transaction_id===t.id))));
+3013:   - Money Held has two ledger events: the original receipt and the later settlement.
+3014:     Editing the settlement row changes settled_at; editing the original row changes created_at.
+3015:   - The All ledger always renders loan records from state.loans and settlement events from settled_at.
+3021:  // Settlement row: Edit must edit the settlement event, not the original Money Held receipt.
+3027:    // Replace only the settlement-row Edit action so the rest of the ledger stays untouched.
+3032:      if(!/Money Held · Paid\/Settled/.test(text)) return;
+3040:  window.editMoneyHeld=async function(id,settlement=false){
+3043:    if(!settlement){ return oldEditMoneyHeld(id); }
+3044:    if(h.status!=='settled' || !h.settled_date){ return oldEditMoneyHeld(id); }
+3045:    // Open the existing form, then switch its timestamp to the settlement event.
+3050:    if(ts) ts.value=local(h.settled_at||h.updated_at||(`${String(h.settled_date).slice(0,10)}T23:59:59+05:30`));
+3051:    f.dataset.mbSettlementEdit='1';
+3053:    // The Money Held form has its own submit handler. Replace it so settlement editing
+3054:    // updates settled_at and leaves the original created_at untouched.
+3062:        const saved=await update('money_held',id,{person_id:x.person_id,amount:Number(x.amount),purpose:x.purpose||null,account_id:x.account_id,received_date:String(x.received_date).slice(0,10),notes:x.notes||null,settled_at:recorded,updated_at:now});
+3064:        closeModal(); render(); mbToast('Money Held settlement updated.');
+3091:/* ===== Final Money Held settlement compatibility fix =====
+3092:   The current database schema may not have money_held.settled_at.  Do not let
+3093:   that optional column make Settle/Edit fail.  If settled_at exists, use it;
+3094:   otherwise use updated_at as the persisted settlement-event timestamp.
+3099:  const isMissingSettledAt=e=>/settled_at.*schema cache|column.*settled_at|Could not find.*settled_at/i.test(String(e?.message||e));
+3101:  async function updateSettlement(id,row,recordedISO){
+3103:      const payload={...row,settled_at:recordedISO||null};
+3106:      if(!isMissingSettledAt(e)) throw e;
+3107:      // Existing databases created before settled_at was introduced are still
+3108:      // fully supported. updated_at becomes the settlement-event timestamp.
+3116:  async function clearSettlementTimestamp(id){
+3117:    try{return await update('money_held',id,{settled_at:null,updated_at:new Date().toISOString()});}
+3119:      if(!isMissingSettledAt(e)) throw e;
+3124:  // Override Settle/Undo so the action works on both old and new schemas.
+3128:    const remaining=Math.max(0,Number(h.amount||0)-Number(h.settled_amount||0));
+3130:      const defaultStamp=h.settled_at||`${today()}T${new Date().toTimeString().slice(0,5)}`;
+3131:      openModalRaw(`<h2>Settle money held</h2><p class="sub">${money(remaining)} remains in ${esc(accountName(h.account_id))}. Enter when the money was actually paid.</p><form id="f"><label>Settlement amount</label><input name="settlement_amount" type="number" min="0.01" max="${remaining.toFixed(2)}" step="0.01" value="${remaining.toFixed(2)}" required><label>Recorded date & time</label><input name="settlement_timestamp" type="datetime-local" value="${String(defaultStamp).slice(0,16)}" required><button class="primary">Mark settlement</button></form>`);
+3139:          const amt=Number(x.settlement_amount);
+3140:          if(!Number.isFinite(amt)||amt<=0)throw new Error('Enter a valid settlement amount.');
+3141:          if(amt>remaining+.01)throw new Error('Settlement amount cannot exceed the remaining held amount.');
+3142:          const newSettled=Number(h.settled_amount||0)+amt;
+3143:          const stamp=toISO(x.settlement_timestamp);
+3144:          const now=new Date().toISOString(); const row={settled_amount:newSettled,status:newSettled>=Number(h.amount)-.009?'settled':'pending',settled_date:String(x.settlement_timestamp||'').slice(0,10),notes:h.notes||null,updated_at:now};
+3145:          const saved=await updateSettlement(id,row,stamp);
+3147:          closeModal();render();mbToast(newSettled>=Number(h.amount)-.009?'Money held fully settled.':'Partial settlement saved.');
+3153:        const saved=await clearSettlementTimestamp(id);
+3154:        // Undo returns the record to pending and clears the settlement date/amount.
+3155:        const restored=await update('money_held',id,{status:'pending',settled_date:null,settled_amount:0,updated_at:saved.updated_at||new Date().toISOString()});
+3157:        render();mbToast('Money held settlement undone.');
+3162:  // Settlement-row Edit: persist its Recorded timestamp without requiring settled_at.
+3164:  window.editMoneyHeld=async function(id,settlement=false){
+3165:    if(!settlement)return previousEdit(id);
+3167:    if(h.status!=='settled'||!h.settled_date)return previousEdit(id);
+3171:    if(ts)ts.value=toLocal(h.settled_at||h.updated_at||(`${String(h.settled_date).slice(0,10)}T23:59:59+05:30`));
+3172:    f.dataset.mbSettlementEdit='1';
+3180:        const saved=await updateSettlement(id,row,recorded);
+3182:        closeModal();render();mbToast('Money Held settlement updated.');
+3191:   1) Budget: Remaining Before Split = normal expenses + settled split shares.
+3192:      Remaining After Split additionally adds unsettled receivables and subtracts
+3193:      unsettled payables.
+3195:   3) All ledger: always includes loans, loan repayments, Money Held settlement,
+3217:  const payerOf=st=>typeof window.splitPayerForSplit==='function'?window.splitPayerForSplit(st):(state.transactions.find(t=>t.id===st?.transaction_id)?.person_id||'__me__');
+3219:  // reimbursements received from that person (oldest split first). Repayments are
+3220:  // recorded per person, so they are spread across that person's splits FIFO.
+3223:    const splitTx=st=>(state.transactions||[]).find(tt=>tt.id===st.transaction_id);
+3224:    const splitDate=st=>String(splitTx(st)?.transaction_date||st.created_at||'').slice(0,10);
+3225:    for(const st of (state.split_transactions||[])){
+3227:      for(const p of (state.split_participants||[])){
+3228:        if(p.split_transaction_id!==st.id||!p.person_id)continue;
+3230:        byPerson.get(p.person_id).push({p,st,d:splitDate(st)});
+3246:  const splitInfoForBudget=(b,a,z)=>{
+3247:    let settledSpend=0, receivable=0, payable=0, hasSplit=false;
+3251:      if(t.type!=='split'||!inRange(t.transaction_date||t.created_at,a,z)) continue;
+3252:      const st=state.split_transactions.find(x=>x.transaction_id===t.id); if(!st) continue;
+3255:      const myShare=num(st.my_share||splitMyShare(t)); if(myShare<=0) continue;
+3259:        // receivables and are added back only in Remaining After Split.
+3260:        settledSpend+=myShare;
+3262:        // (not in split_participants.amount_paid), so use the settlement-aware
+3264:        const outstanding=(state.split_participants||[])
+3265:          .filter(x=>x.split_transaction_id===st.id)
+3268:        hasSplit=true;
+3271:        // Allocate repayments to this payer across their outstanding splits in
+3273:        const priorSplits=(state.split_transactions||[])
+3279:        for(const ps of priorSplits){
+3284:            settledSpend+=paid;
+3286:            hasSplit=true;
+3292:    return {settledSpend,receivable,payable,hasSplit};
+3296:  window.__mbBudgetSplitLogic=splitInfoForBudget;
+3302:    const d=splitInfoForBudget(b,a,z);
+3303:    const spentBefore=normalSpent+d.settledSpend;
+3309:    return `<div class="row budget-row"><div class="budget-main"><div class="total-line"><span><b>${esc(b.name)}</b><div class="sub">${esc(budgetCategoryLabel(b))} · ${b.period}</div></span></div><div class="budget-progress-line"><div class="progress"><div class="bar ${cls}" style="width:${Math.min(100,Math.max(0,pct))}%"></div></div><span class="badge status-${cls}">${pct.toFixed(0)}%</span></div><div class="budget-amounts"><span class="budget-amount budget-spent">Spent <b class="red">${money(spentAfter)}</b></span><span class="budget-amount budget-limit">Budget <b class="purple">${money(amount)}</b></span></div><div class="budget-amounts budget-amounts-split"><span class="budget-amount budget-remaining">Remaining · before split<b class="${remBefore>=0?'green':'red'}">${money(remBefore)}</b></span><span class="budget-amount ${remAfter<0?'budget-remaining-over':'budget-remaining'}">Remaining · after split<b class="${remAfter>=0?'green':'red'}">${money(remAfter)}</b></span></div>${d.hasSplit?(d.receivable>0||d.payable>0?`<div class="sub" style="margin-top:6px">Unsettled: ${d.receivable>0?`<span class="green">+${money(d.receivable)} receivable</span>`:'no receivable'} · ${d.payable>0?`<span class="red">−${money(d.payable)} payable</span>`:'no payable'}</div>`:`<div class="sub" style="margin-top:6px"><span class="green">✓ All shared-bill amounts settled</span></div>`):''}</div><div class="action-row"><button class="smallbtn" onclick="editBudget('${b.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteBudget('${b.id}')">Delete</button></div></div>`;
+3316:    openModalRaw(`<h2>Filter transactions</h2><form id="filterForm"><label>From date</label><input type="date" name="from" value="${esc(mbFilter.from||'')}"><label>To date</label><input type="date" name="to" value="${esc(mbFilter.to||'')}"><label>Type</label><select name="type"><option value="All" ${!mbFilter.type||mbFilter.type==='All'?'selected':''}>All</option><option value="income" ${mbFilter.type==='income'?'selected':''}>Income</option><option value="expense" ${mbFilter.type==='expense'?'selected':''}>Expense</option><option value="transfer" ${mbFilter.type==='transfer'?'selected':''}>Transfer</option><option value="split" ${mbFilter.type==='split'?'selected':''}>Split</option><option value="reimbursement" ${mbFilter.type==='reimbursement'?'selected':''}>Reimbursement</option></select><label>Parent category</label><select name="category" id="txFilterParent"><option value="">All parent categories</option>${parents.map(c=>`<option value="${esc(c.id)}" ${mbFilter.category===c.id?'selected':''}>${esc(c.icon||'🏷️')} ${esc(c.name)}</option>`).join('')}</select><label>Subcategory</label><select name="subcategory" id="txFilterSub"></select><label>Account</label>${sel('account',state.accounts,mbFilter.account||'',false)}<label>Person</label>${sel('person',state.people,mbFilter.person||'',false)}<label>Description contains</label><input name="description" value="${esc(mbFilter.description||'')}"><label>Special</label><select name="kind"><option value="all" ${mbFilter.kind==='all'?'selected':''}>All</option><option value="held" ${mbFilter.kind==='held'?'selected':''}>Held for others</option><option value="lendborrow" ${mbFilter.kind==='lendborrow'?'selected':''}>Lend / Borrow</option><option value="recurring" ${mbFilter.kind==='recurring'?'selected':''}>Recurring transactions only</option></select><div class="action-row"><button type="button" class="secondary" onclick="clearAllTransactionFilters();closeModal()">Clear</button><button class="primary">Apply filters</button></div></form>`);
+3330:  // predate created_at; settlement is a separate Money Held event.
+3334:    for(const st of state.split_transactions){
+3337:      rows.push({id:st.transaction_id,type:'split',amount:num(st.total_amount),description:'Split transaction',transaction_date:tx?.transaction_date||localDate(st.created_at)||today(),account_id:tx?.account_id||null,created_at:st.created_at||tx?.created_at||tx?.transaction_date,updated_at:st.updated_at||tx?.updated_at,__special:'split',__specialId:st.id,person_id:tx?.person_id||null});
+3342:      const __heldSettled=String(h.status||'').toLowerCase()==='settled'||(Number(h.amount||0)>0&&Number(h.settled_amount||0)>=Number(h.amount||0)-.009); rows.push({id:`held-${h.id}`,type:'money_held',amount:num(h.amount),description:`Money held for ${personName(h.person_id)}`,transaction_date:h.received_date||localDate(h.created_at)||today(),account_id:h.account_id||null,created_at:h.created_at||h.received_date,updated_at:h.updated_at,notes:h.purpose||h.notes||'',status:__heldSettled?'settled':'pending',person_id:h.person_id,__special:'held',__specialId:h.id});
+3343:      if(h.status==='settled'&&h.settled_date){
+3344:        rows.push({id:`held-settlement-${h.id}`,type:'money_held_settlement',amount:num(h.amount),description:`Money Held paid to ${personName(h.person_id)}`,transaction_date:h.settled_date,account_id:h.account_id||null,created_at:h.settled_at||h.updated_at||`${String(h.settled_date).slice(0,10)}T23:59:59+05:30`,updated_at:h.updated_at||null,notes:h.purpose||h.notes||'',person_id:h.person_id,__special:'held_settlement',__specialId:h.id});
+3354:    if(t.__special==='held_settlement')return '−';
+3355:    if(t.__special==='split'||t.type==='split')return '÷';
+3364:    if(t.type==='expense'||t.type==='split'||t.__special==='held_settlement'||(t.__special==='loan'&&t.direction==='lend')||(t.__special==='loan_repayment'&&t.direction==='sent'))return 'expense';
+3368:    return 'split';
+3374:        const fully=String(h.status||'').toLowerCase()==='settled'||(Number(h.amount||0)>0&&Number(h.settled_amount||0)>=Number(h.amount||0)-.009);
+3375:        t={...t,status:fully?'settled':'pending'};
+3378:    const icon=iconFor(t), cls=iconClass(t), sign=(t.__special==='loan'?(t.direction==='borrow'?'+':'−'):t.__special==='loan_repayment'?(t.direction==='received'?'+':'−'):t.__special==='held'?' +':t.__special==='held_settlement'?'−':t.type==='income'||t.type==='reimbursement'?'+':t.type==='expense'||t.type==='split'?'−':'');
+3382:    else if(t.__special==='held')meta=`Money Held · Received · ${t.status==='settled'?'Settled':'Pending'} · ${personName(t.person_id)}`;
+3383:    else if(t.__special==='held_settlement')meta=`Money Held · Paid/Settled · ${personName(t.person_id)}`;
+3384:    else if(t.__special==='split'){const st=state.split_transactions.find(x=>x.id===t.__specialId);meta=`Split · Paid by ${payerOf(st)==='__me__'?'Me':personName(payerOf(st))} · Your share ${money(st?.my_share||0)}`;}
+3391:    else if(t.__special==='held')action=`<button class="smallbtn" onclick="editMoneyHeld('${t.__specialId}')">Edit</button><button class="smallbtn" onclick="toggleMoneyHeld('${t.__specialId}')">${t.status==='settled'?'Undo':'Settle'}</button><button class="smallbtn dangerbtn" onclick="deleteMoneyHeld('${t.__specialId}')">Delete</button>`;
+3392:    else if(t.__special==='held_settlement')action=`<button class="smallbtn" onclick="editMoneyHeld('${t.__specialId}',true)">Edit</button><button class="smallbtn" onclick="toggleMoneyHeld('${t.__specialId}')">Undo</button>`;
+3393:    else if(t.__special==='split')action=`<button class="smallbtn" onclick="editSplitSpecial('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteSplitSpecial('${t.__specialId}')">Delete</button>`;
+3400:    const types=['All','income','expense','transfer','split','reimbursement'];
+3403:    if(kind==='held')arr=arr.filter(t=>t.__special==='held'||t.__special==='held_settlement');
+3412:    if(mbFilter.person)arr=arr.filter(t=>t.person_id===mbFilter.person||(!t.__special&&state.split_participants.some(x=>x.person_id===mbFilter.person&&state.split_transactions.some(st=>st.id===x.split_transaction_id&&st.transaction_id===t.id))));
+3418:  const style=document.createElement('style');style.textContent=`.mb-tx-icon{font-family:Arial,sans-serif!important;font-size:18px!important;font-weight:900!important;line-height:1!important;color:var(--ink)!important}.bubble.income.mb-tx-icon{color:var(--mint)!important}.bubble.expense.mb-tx-icon{color:var(--red)!important}.bubble.transfer.mb-tx-icon{color:var(--blue)!important}.bubble.split.mb-tx-icon{color:var(--purple)!important}@media(max-width:560px){.transaction-row .mb-tx-icon{display:grid!important;visibility:visible!important;opacity:1!important;width:36px!important;height:36px!important;font-size:17px!important;flex:0 0 36px!important}.transaction-row .left{min-width:0!important}.transaction-row .tx-content{min-width:0!important}}`;document.head.appendChild(style);
