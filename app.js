@@ -442,7 +442,7 @@ function recalcSplit(){
   const preview=$('splitPreview');
   if(preview)preview.innerHTML=`<div class="split-preview-main"><span>Your share</span><b>${money(mine)}</b><span>Others owe you</span><b>${money(Math.max(0,sum))}</b></div><span class="${valid?'green':'red'}">${valid?'✓ Split balances':`⚠ Shares must add up to ${money(total)} · ${money(Math.max(0,total-combined))} remaining`}</span>`;
 }
-async function submitForm(type,data,f){const btn=f.querySelector('.primary');if(btn)btn.disabled=true;try{await saveModal(type,data,f);await mbLoadForMutation(mbMutationTables(type));closeModal();render();mbToast(type==='budget'?(data?'Budget updated.':'Budget added.'):type==='goal'?(data?'Goal updated.':'Goal added.'):(data?'Updated successfully.':'Saved successfully.'))}catch(e){mbToast(friendlyError(e),'error');throw e}finally{if(btn)btn.disabled=false}}
+async function submitForm(type,data,f){const btn=f.querySelector('.primary');if(btn)btn.disabled=true;try{await saveModal(type,data,f);await mbLoadForMutation(mbMutationTables(type));closeModal();render();mbToast(type==='budget'?(data?'Budget updated.':'Budget added.'):type==='goal'?(data?'Goal updated.':'Goal added.'):(data?'Updated successfully.':'Saved successfully.'))}catch(e){console.error('[My Budget] Save failed:',e);mbToast(friendlyError(e),'error')}finally{if(btn)btn.disabled=false}}
 function friendlyError(e){const msg=String(e?.message||e||'Could not save.');if(/duplicate key value.*people.*name|people_user_id_name|people.*name.*unique/i.test(msg))return 'A person with this name already exists. Please use the existing person or choose a different name.';if(/duplicate key value.*categories/i.test(msg))return 'A category with this name and type already exists. Please choose a different name.';if(/permission denied/i.test(msg))return 'Permission denied. Please run the latest My Budget SQL migration in Supabase, then try again.';return msg}
 
 async function saveModal(type,data,f){const x=Object.fromEntries(new FormData(f).entries());if(type==='account'){const row={name:x.name,type:x.type,currency:(x.currency||'INR').toUpperCase(),opening_balance:Number(x.opening_balance||0)};data?await update('accounts',data.id,row):await insert('accounts',{...row,is_active:true})}
@@ -659,7 +659,7 @@ async function loadData(){
   if(o.error && !/does not exist/i.test(o.error.message)) throw o.error;
   state.recurring_occurrences=o.data||[];
 }
-function mbToast(msg,type='success'){let e=$('mbToast');if(!e){e=document.createElement('div');e.id='mbToast';document.body.appendChild(e)}e.className='mb-toast '+type;e.textContent=msg;e.classList.add('show');clearTimeout(window.__mbToastTimer);window.__mbToastTimer=setTimeout(()=>e.classList.remove('show'),2600)}
+function mbToast(msg,type='success'){let e=$('mbToast');if(!e){e=document.createElement('div');e.id='mbToast';document.body.appendChild(e)}e.className='mb-toast '+type;e.textContent=msg;e.classList.add('show');window.__mbLastToastAt=Date.now();clearTimeout(window.__mbToastTimer);window.__mbToastTimer=setTimeout(()=>e.classList.remove('show'),2600)}
 function mbBusy(){} function mbBusyOff(){}
 const MB_insert=insert,MB_update=update,MB_del=del;
 insert=async function(t,row){return await MB_insert(t,row)};
@@ -716,7 +716,7 @@ let mbFilter={type:'All',from:'',to:'',category:'',subcategory:'',account:'',per
 function openTransactionFilters(){openModalRaw(`<h2>Filter transactions</h2><form id="filterForm"><label>From date</label><input type="date" name="from" value="${esc(mbFilter.from)}"><label>To date</label><input type="date" name="to" value="${esc(mbFilter.to)}"><label>Type</label><select name="type"><option>All</option><option value="income">Income</option><option value="expense">Expense</option><option value="transfer">Transfer</option><option value="split">Split</option><option value="reimbursement">Reimbursement</option></select><label>Category</label><select name="category"><option value="">All categories</option>${categoryPool('expense').filter(c=>!c.parent_id).map(c=>`<option value="${c.id}" ${mbFilter.category===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select><label>Account</label>${sel('account',state.accounts,mbFilter.account,false)}<label>Person</label>${sel('person',state.people,mbFilter.person,false)}<label>Description contains</label><input name="description" value="${esc(mbFilter.description)}"><label>Special</label><select name="kind"><option value="all">All</option><option value="held">Held for others</option><option value="lendborrow">Lend / Borrow</option><option value="recurring">Recurring-linked</option></select><div class="action-row"><button type="button" class="secondary" onclick="mbFilter={type:'All',from:'',to:'',category:'',subcategory:'',account:'',person:'',description:'',kind:'all'};closeModal();renderTransactions()">Clear</button><button class="primary">Apply filters</button></div></form>`);$('filterForm').onsubmit=e=>{e.preventDefault();mbFilter={...mbFilter,...Object.fromEntries(new FormData(e.target))};closeModal();renderTransactions()}}
 function renderTransactions(){const types=['All','income','expense','transfer','split','reimbursement'],active=mbFilter.type||'All';$('filters').innerHTML=types.map(x=>`<button class="chip ${active===x?'active':''}" onclick="mbFilter.type='${x}';renderTransactions()">${x==='All'?'All':x[0].toUpperCase()+x.slice(1)}</button>`).join('')+'<button class="chip filter-button" onclick="openTransactionFilters()">⚙ Filters</button>';let arr=state.transactions.slice().sort((a,b)=>String(b.transaction_date).localeCompare(String(a.transaction_date)));if(active!=='All')arr=arr.filter(t=>t.type===active);if(mbFilter.from)arr=arr.filter(t=>String(t.transaction_date)>=mbFilter.from);if(mbFilter.to)arr=arr.filter(t=>String(t.transaction_date)<=mbFilter.to);if(mbFilter.category)arr=arr.filter(t=>txAllocations(t).some(x=>rootCategory(state.categories.find(c=>c.id===x.category_id))?.id===mbFilter.category||x.category_id===mbFilter.category));if(mbFilter.account)arr=arr.filter(t=>t.account_id===mbFilter.account||(state.transaction_accounts||[]).some(x=>x.transaction_id===t.id&&x.account_id===mbFilter.account));if(mbFilter.person)arr=arr.filter(t=>t.person_id===mbFilter.person||state.split_participants.some(x=>{const st=state.split_transactions.find(s=>s.transaction_id===t.id);return st&&x.split_transaction_id===st.id&&x.person_id===mbFilter.person}));if(mbFilter.description)arr=arr.filter(t=>String(t.description||'').toLowerCase().includes(mbFilter.description.toLowerCase()));if(mbFilter.kind==='recurring')arr=arr.filter(t=>t.recurring_id);if(mbFilter.kind==='held'){const rows=state.money_held.slice().sort((a,b)=>String(b.received_date).localeCompare(String(a.received_date)));$('txList').innerHTML=rows.map(heldHTML).join('')||'<div class="empty">No Money Held records.</div>';return}if(mbFilter.kind==='lendborrow'){const rows=[...state.loans.map(l=>({kind:'loan',id:l.id,date:l.loan_date,label:(l.direction==='lend'?'Lend · ':'Borrow · ')+personName(l.person_id),amount:l.amount})),...state.loan_repayments.map(r=>({kind:'repayment',id:r.id,date:r.repayment_date,label:(r.direction==='received'?'Received · ':'Repaid · ')+personName(r.person_id),amount:r.amount}))].sort((a,b)=>String(b.date).localeCompare(String(a.date)));$('txList').innerHTML=rows.map(r=>`<div class="row"><div><div class="name">${esc(r.label)}</div><div class="sub">${fmtDate(r.date)}</div></div><div><b>${money(r.amount)}</b><button class="smallbtn" onclick="${r.kind==='loan'?`editLoan('${r.id}')`:`editLoanRepayment('${r.id}')`}">Edit</button><button class="smallbtn dangerbtn" onclick="${r.kind==='loan'?`deleteLoan('${r.id}')`:`deleteLoanRepayment('${r.id}')`}">Delete</button></div></div>`).join('')||'<div class="empty">No lend/borrow records.</div>';return}$('txList').innerHTML=arr.map(txHTML).join('')||'<div class="empty">No transactions found.</div>'}
 function txHTML(t){const icon={income:'↑',expense:'−',transfer:'⇄',split:'🔀',reimbursement:'↩'}[t.type]||'•',sign=t.type==='income'||t.type==='reimbursement'?'+':t.type==='expense'||t.type==='split'?'−':'',other=t.type==='transfer'?` → ${esc(accountName(t.to_account_id))}`:'',share=t.type==='split'?` · ${esc(getNickname())} share ${money(splitMyShare(t))}`:'',cats=txAllocations(t).map(a=>catName(a.category_id)).filter(Boolean);return `<div class="row transaction-row"><div class="left"><div class="bubble ${t.type==='income'||t.type==='reimbursement'?'income':t.type}">${icon}</div><div class="tx-content"><div class="name">${esc(t.description||'(No description)')}</div><div class="sub">${fmtDate(t.transaction_date)} · ${esc(accountAllocationSummary(t))}${other}${share}</div>${cats.length?`<div class="sub">Category: ${esc(cats.join(', '))}</div>`:''}${t.notes?`<div class="sub">${esc(t.notes)}</div>`:''}</div></div><div class="tx-right" style="text-align:right"><b class="${sign==='+'?'green':sign==='−'?'red':''}">${sign}${money(t.amount)}</b><div class="action-row"><button class="smallbtn" onclick="editTx('${t.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteTx('${t.id}')">Delete</button></div></div></div>`}
-async function submitForm(type,data,f){const btn=f.querySelector('.primary');if(btn)btn.disabled=true;try{await saveModal(type,data,f);await mbLoadForMutation(mbMutationTables(type));closeModal();render();mbToast(type==='budget'?(data?'Budget updated.':'Budget added.'):type==='goal'?(data?'Goal updated.':'Goal added.'):(data?'Updated successfully.':'Saved successfully.'))}catch(e){mbToast(friendlyError(e),'error');throw e}finally{if(btn)btn.disabled=false}}
+async function submitForm(type,data,f){const btn=f.querySelector('.primary');if(btn)btn.disabled=true;try{await saveModal(type,data,f);await mbLoadForMutation(mbMutationTables(type));closeModal();render();mbToast(type==='budget'?(data?'Budget updated.':'Budget added.'):type==='goal'?(data?'Goal updated.':'Goal added.'):(data?'Updated successfully.':'Saved successfully.'))}catch(e){console.error('[My Budget] Save failed:',e);mbToast(friendlyError(e),'error')}finally{if(btn)btn.disabled=false}}
 const MB_pdfBase=exportPDF;
 function exportPDF(){if(!window.jspdf)return mbToast('PDF library is unavailable.','error');const {jsPDF}=window.jspdf,doc=new jsPDF({unit:'pt',format:'a4'}),W=595,M=36,H=842;let y=44;const text=s=>String(s??'').replace(/[^\x20-\x7E]/g,'');const m=n=>'INR '+Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:2});const page=()=>{doc.addPage();y=44};const ensure=h=>{if(y+h>H-40)page()};const head=t=>{ensure(28);doc.setFontSize(17);doc.setFont(undefined,'bold');doc.text(text(t),M,y);y+=24;doc.setFont(undefined,'normal')};const line=(s,b=false)=>{ensure(16);doc.setFontSize(8.5);doc.setFont(undefined,b?'bold':'normal');doc.text(text(s),M,y);y+=13};doc.setFontSize(24);doc.setFont(undefined,'bold');doc.text('My Budget',M,y);y+=22;doc.setFontSize(11);doc.setFont(undefined,'normal');doc.text('Financial Report · '+text(new Date().toLocaleString('en-IN',{timeZone:'Asia/Kolkata'})),M,y);y+=28;const inc=sumType('income',ym()),sp=personalSpendingBetween(ym()+'-01',today()),sav=inc-sp;[['MONTHLY INCOME',m(inc)],['MONTHLY SPENT',m(sp)],['MONTHLY SAVED',m(sav)]].forEach((q,i)=>{const x=M+i*176;doc.roundedRect(x,y,165,54,8,8);doc.setFontSize(8);doc.text(q[0],x+10,y+17);doc.setFontSize(15);doc.setFont(undefined,'bold');doc.text(text(q[1]),x+10,y+39);doc.setFont(undefined,'normal')});y+=70;head('Financial summary');line('Net balance: '+m(totalBalance()),true);line('People receivable: '+m(owedTotal()));line('Money held for others: '+m(moneyHeldOutstanding()));head('Spending by category');categoryGroups([ym()+'-01',today()]).forEach(g=>line(`${g.root.name}: ${m(g.spent)} · ${sp?(g.spent/sp*100).toFixed(1):0}%`));head('Budgets');state.budgets.forEach(b=>{const q=budgetStatus(b);line(`${b.name} · ${budgetCategoryLabel(b)} · ${m(q.used)} / ${m(b.amount)} · ${q.pct.toFixed(0)}%`)});head('Goals');state.goals.forEach(g=>line(`${g.name} · Existing ${m(g.existing_amount)} · Saved ${m(g.saved_amount)} / ${m(g.target_amount)} · ${(g.target_amount?g.saved_amount/g.target_amount*100:0).toFixed(0)}%`));head('Reminders');state.reminders.forEach(r=>line(`${r.due_date} · ${r.completed?'Completed':'Pending'} · ${r.title}${r.note?' · '+r.note:''}`));head('People');peopleBalances().forEach(p=>line(`${p.name} · They owe ${m(p.balance)} · You owe ${m(p.iOwe)} · Split repaid ${m(p.totalRepaid)} · Held pending ${m(p.heldPending)} · Loan received ${m(p.loanReceived)} · Loan repaid ${m(p.loanSent)}`));head('Lend & Borrow');state.loans.forEach(l=>line(`${l.loan_date} · ${l.direction==='lend'?'LEND':'BORROW'} · ${personName(l.person_id)} · ${m(l.amount)} · ${accountName(l.account_id)}`));state.loan_repayments.forEach(r=>line(`${r.repayment_date} · ${r.direction==='received'?'RECEIVED':'REPAID'} · ${personName(r.person_id)} · ${m(r.amount)} · ${accountName(r.account_id)}`));head('Money Held');state.money_held.forEach(h=>line(`${h.received_date} · ${personName(h.person_id)} · ${m(h.amount)} · Settled ${m(h.settled_amount||0)} · ${h.status}`));head('Recurring schedules');state.recurring_transactions.forEach(r=>line(`${r.name} · ${r.frequency} · ${m(r.amount)} · next ${r.next_date} · ${r.active?'Active':'Paused'}`));head('All Transactions');state.transactions.slice().sort((a,b)=>String(a.transaction_date).localeCompare(String(b.transaction_date))).forEach((t,i)=>line(`${i+1}. ${t.transaction_date} · ${t.type} · ${t.description||'(No description)'} · ${m(t.amount)} · ${accountAllocationSummary(t)} · ${txAllocations(t).map(x=>catName(x.category_id)).join(', ')}`));head('Insights');line(`Savings rate: ${inc?(sav/inc*100).toFixed(1):0}%`);line(weekdayInsightForRange(ym()+'-01',today()));line(salaryWeekInsightForRange(ym()+'-01',today()));line('Savings runway: '+runway());line('Next month forecast: '+m(nextMonthPrediction()));doc.save('my-budget-professional-report.pdf');mbToast('Professional PDF report created.')}
 const MB_openModal3=openModal;
@@ -1727,7 +1727,7 @@ exportPDF=exportPDFPlus;
       await fastRefresh(mutationTables(type));
       closeModal();render();
       mbToast(type==='budget'?(data?'Budget updated.':'Budget added.'):type==='goal'?(data?'Goal updated.':'Goal added.'):(data?'Updated successfully.':'Saved successfully.'));
-    }catch(e){mbToast(friendlyError(e),'error');throw e}
+    }catch(e){console.error('[My Budget] Save failed:',e);mbToast(friendlyError(e),'error')}
     finally{if(btn)btn.disabled=false}
   };
 
@@ -2036,7 +2036,7 @@ exportPDF=exportPDFPlus;
     const bal=peopleBalances().find(q=>q.id===x.person_id)||{};
     const available=direction==='sent'?Number(bal.iOwe||0):Number(bal.balance||0);
     if(amount>available+.01)throw new Error(`${direction==='sent'?'Repayment':'Receipt'} cannot exceed outstanding ${money(available)}.`);
-    const row={amount,description:direction==='sent'?`Repayment to ${p.name}`:`Reimbursement from ${p.name}`,transaction_date:x.reimbursement_date,account_id:x.account_id,type:'reimbursement',person_id:x.person_id,notes:x.notes||null,direction};
+    const row={amount,description:direction==='sent'?`Repayment to ${p.name}`:`Reimbursement from ${p.name}`,transaction_date:x.reimbursement_date,account_id:x.account_id,type:'reimbursement',person_id:x.person_id,notes:x.notes||null};
     let tx,r;
     if(type==='repaymentEdit'){
       r=data.reimbursement;if(!r)throw new Error('Repayment record not found.');
@@ -2044,7 +2044,14 @@ exportPDF=exportPDFPlus;
       await update('reimbursements',r.id,{person_id:x.person_id,amount,reimbursement_date:x.reimbursement_date,account_id:x.account_id,notes:x.notes||null,direction});
     }else{
       tx=await insert('transactions',row);
-      r=await insert('reimbursements',{person_id:x.person_id,amount,reimbursement_date:x.reimbursement_date,account_id:x.account_id,transaction_id:tx.id,notes:x.notes||null,direction});
+      try{
+        r=await insert('reimbursements',{person_id:x.person_id,amount,reimbursement_date:x.reimbursement_date,account_id:x.account_id,transaction_id:tx.id,notes:x.notes||null,direction});
+      }catch(err){
+        // Do not leave a half-saved settlement behind: without its reimbursement row the ledger
+        // transaction would still move the account balance, and every retry would add another one.
+        try{await del('transactions',tx.id)}catch(_){}
+        throw err;
+      }
     }
     const ts=f?.elements?.transaction_timestamp?.value;if(ts&&user){const iso=window.__mbTimestamp?.localDTToISO?window.__mbTimestamp.localDTToISO(ts):ts;const now=new Date().toISOString();await sb.from('transactions').update({created_at:iso,updated_at:now}).eq('id',tx.id).eq('user_id',user.id)}
     return tx;
@@ -2821,6 +2828,9 @@ exportPDF=exportPDFPlus;
     function mbNotifyUnexpectedError(err){
       const now = Date.now();
       if(now - lastShown < 1500) return; // avoid spamming multiple toasts for one failure
+      // A specific, actionable message (e.g. from a failed save) was just shown to the
+      // user via mbToast — don't stomp on it with this generic fallback.
+      if(now - (window.__mbLastToastAt||0) < 1500) return;
       lastShown = now;
       console.error('[My Budget] Unexpected error:', err);
       try{ if(typeof window.mbToast==='function') window.mbToast('Something went wrong with that action. Please try again.', 'error'); }catch(e){}
@@ -3261,10 +3271,17 @@ exportPDF=exportPDFPlus;
         // Money already received back is stored as person-level reimbursements
         // (not in split_participants.amount_paid), so use the settlement-aware
         // outstanding amount, the same basis the People tab uses.
-        const outstanding=(state.split_participants||[])
+        const settledInfo=typeof window.mbSplitSettlement==='function'?window.mbSplitSettlement().info.get(String(st.id)):null;
+        const outstanding=settledInfo?settledInfo.outstanding:(state.split_participants||[])
           .filter(x=>x.split_transaction_id===st.id)
           .reduce((s,x)=>s+(recvOutstanding.has(x.id)?recvOutstanding.get(x.id):Math.max(0,num(x.amount)-num(x.amount_paid))),0);
         receivable+=outstanding;
+        hasSplit=true;
+      }else if(typeof window.mbSplitSettlement==='function'&&window.mbSplitSettlement().info.get(String(st.id))){
+        // Same per-split settlement numbers as the Split tab and People.
+        const left=Math.min(num(st.my_share),window.mbSplitSettlement().info.get(String(st.id)).outstanding);
+        settledSpend+=num(st.my_share)-left;
+        payable+=left;
         hasSplit=true;
       }else{
         // If someone else paid, my share is a payable until I reimburse them.
@@ -3935,12 +3952,13 @@ exportPDF=exportPDFPlus;
   // Only splits paid by me create receivables; a payer's own participant row is never counted as owed to me.
   function settlement(){
     const txById=new Map((state.transactions||[]).map(t=>[String(t.id),t]));
+    const splitByTx=new Map((state.split_transactions||[]).map(st=>[String(st.transaction_id),st]));
     const partsBySplit=new Map();
     for(const p of (state.split_participants||[])){const k=String(p.split_transaction_id);if(!partsBySplit.has(k))partsBySplit.set(k,[]);partsBySplit.get(k).push(p)}
     const dateOf=st=>String(txById.get(String(st.transaction_id))?.transaction_date||st.created_at||'').slice(0,10);
     const order=(a,b)=>dateOf(a).localeCompare(dateOf(b))||String(a.created_at||'').localeCompare(String(b.created_at||''))||String(a.id).localeCompare(String(b.id));
     const info=new Map(), byPerson={}, recvRows={}, payRows={};
-    const P=pid=>byPerson[pid]||(byPerson[pid]={get:0,gross:0,pay:0});
+    const P=pid=>byPerson[pid]||(byPerson[pid]={get:0,gross:0,pay:0,payGross:0});
     for(const st of (state.split_transactions||[]).slice().sort(order)){
       const payer=payerOf(st), entry={st,payer,outstanding:0,people:{}};
       info.set(String(st.id),entry);
@@ -3951,22 +3969,37 @@ exportPDF=exportPDFPlus;
       }
     }
     const reimb=state.reimbursements||[];
-    const sumFor=(pid,sent)=>reimb.filter(r=>String(r.person_id)===String(pid)&&((r.direction==='sent')===sent)).reduce((s,r)=>s+num(r.amount),0);
+    // A settlement recorded from a split's Settle button remembers which split it was for
+    // (its ledger transaction points at the split's transaction via related_transaction_id).
+    // Such a payment is applied to THAT split first; anything left over, and payments that
+    // are not tied to a split, are applied oldest split first.
+    const targetOf=r=>{const t=txById.get(String(r.transaction_id));const rel=t&&t.related_transaction_id;const st=rel&&splitByTx.get(String(rel));return st?String(st.id):null};
+    const listFor=(pid,sent)=>reimb.filter(r=>String(r.person_id)===String(pid)&&((r.direction==='sent')===sent));
+    // rows are already oldest-first. Returns Map(row -> amount still unpaid).
+    const allocate=(rows,list,baseOf)=>{
+      let pool=0;const tgt={};
+      for(const r of list){const k=targetOf(r);if(k)tgt[k]=(tgt[k]||0)+num(r.amount);else pool+=num(r.amount)}
+      const present=new Set(rows.map(x=>String(x.entry.st.id)));
+      for(const k of Object.keys(tgt))if(!present.has(k)){pool+=tgt[k];delete tgt[k]}
+      const left=new Map();
+      for(const row of rows){const k=String(row.entry.st.id),base=baseOf(row),used=Math.min(base,tgt[k]||0);tgt[k]=(tgt[k]||0)-used;left.set(row,base-used)}
+      for(const k of Object.keys(tgt))pool+=tgt[k];
+      for(const row of rows){const b=left.get(row),used=Math.min(b,pool);pool-=used;left.set(row,b-used)}
+      return left;
+    };
     for(const pid of Object.keys(recvRows)){
-      let pool=sumFor(pid,false);
-      for(const {p,entry} of recvRows[pid]){
-        const base=Math.max(0,num(p.amount)-num(p.amount_paid)), used=Math.min(base,pool); pool-=used;
-        const left=fix(base-used);
-        entry.people[pid]=(entry.people[pid]||0)+left; entry.outstanding+=left;
-        P(pid).get+=left; P(pid).gross+=num(p.amount);
+      const rows=recvRows[pid], left=allocate(rows,listFor(pid,false),({p})=>Math.max(0,num(p.amount)-num(p.amount_paid)));
+      for(const row of rows){
+        const {p,entry}=row, l=fix(left.get(row));
+        entry.people[pid]=(entry.people[pid]||0)+l; entry.outstanding+=l;
+        P(pid).get+=l; P(pid).gross+=num(p.amount);
       }
     }
     for(const pid of Object.keys(payRows)){
-      let pool=sumFor(pid,true);
-      for(const {entry} of payRows[pid]){
-        const base=num(entry.st.my_share), used=Math.min(base,pool); pool-=used;
-        const left=fix(base-used);
-        entry.people[pid]=left; entry.outstanding=left; P(pid).pay+=left;
+      const rows=payRows[pid], left=allocate(rows,listFor(pid,true),({entry})=>num(entry.st.my_share));
+      for(const row of rows){
+        const {entry}=row, l=fix(left.get(row));
+        entry.people[pid]=l; entry.outstanding=l; P(pid).pay+=l; P(pid).payGross+=num(entry.st.my_share);
       }
     }
     return {info,byPerson};
@@ -3982,7 +4015,8 @@ exportPDF=exportPDFPlus;
         const x=S.byPerson[p.id]||{get:0,gross:0,pay:0};
         return {...p,
           balance:x.get+num(p.loanOwed), iOwe:x.pay+num(p.loanIowe),
-          splitPending:x.get, splitSettled:Math.max(0,x.gross-x.get), splitPayable:x.pay,
+          splitPending:x.get, splitSettled:Math.max(0,x.gross-x.get)+Math.max(0,(x.payGross||0)-x.pay), splitPayable:x.pay,
+          splitPaidOut:Math.max(0,(x.payGross||0)-x.pay),
           splitShouldGet:x.get, splitShouldPay:x.pay};
       });
     };
@@ -3993,7 +4027,7 @@ exportPDF=exportPDFPlus;
   window.__splitPeopleAmountsFinal=legacyAmounts;
 
   window.personHTML=function(p){
-    return `<div class="person-card"><div class="row"><div class="left"><div class="bubble person">${otherPersonIcon()}</div><div><div class="name">${esc(p.name)}</div></div></div><div class="action-row"><button class="smallbtn" onclick="editPerson('${p.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deletePerson('${p.id}')">Delete</button></div></div><div class="person-metrics"><span>Split pending <b>${money(p.splitPending)}</b></span><span>Split you owe <b>${money(p.splitPayable)}</b></span><span>Split repaid <b>${money(p.totalRepaid)}</b></span><span>Held pending <b>${money(p.heldPending)}</b></span><span>Held settled <b>${money(p.heldSettled)}</b></span><span>Lent outstanding <b>${money(p.loanOwed)}</b></span><span>Borrowed outstanding <b>${money(p.loanIowe)}</b></span><span>Loan received <b>${money(p.loanReceived)}</b></span><span>Loan repaid <b>${money(p.loanSent)}</b></span></div></div>`;
+    return `<div class="person-card"><div class="row"><div class="left"><div class="bubble person">${otherPersonIcon()}</div><div><div class="name">${esc(p.name)}</div></div></div><div class="action-row"><button class="smallbtn" onclick="editPerson('${p.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deletePerson('${p.id}')">Delete</button></div></div><div class="person-metrics"><span>Split pending <b>${money(p.splitPending)}</b></span><span>Split you owe <b>${money(p.splitPayable)}</b></span><span>Split repaid <b>${money(p.totalRepaid)}</b></span>${p.splitPaidOut>.009?`<span>Split you repaid <b>${money(p.splitPaidOut)}</b></span>`:''}<span>Held pending <b>${money(p.heldPending)}</b></span><span>Held settled <b>${money(p.heldSettled)}</b></span><span>Lent outstanding <b>${money(p.loanOwed)}</b></span><span>Borrowed outstanding <b>${money(p.loanIowe)}</b></span><span>Loan received <b>${money(p.loanReceived)}</b></span><span>Loan repaid <b>${money(p.loanSent)}</b></span></div></div>`;
   };
 
   const baseRP=window.renderPeople;
@@ -4029,13 +4063,42 @@ exportPDF=exportPDFPlus;
     };
   }
 
-  /* ---------- "Create" marker (one shared state for Split tab + Transactions tab) ---------- */
+  /* ---------- "Create" marker (one shared state for Split tab + Transactions tab) ----------
+     This now persists to the database (split_transactions.phonepe_created) so it survives
+     refreshes, new deployments, and works across devices/browsers. Older databases that
+     haven't run MIGRATION_ADD_PHONEPE_CREATED.sql yet fall back to a local-only marker
+     (per-browser, via localStorage) so the button still works either way. */
   const MARK_KEY='mb_phonepe_split_created_v1', OLD_KEY='mb_phonepe_split_created';
   const readKey=k=>{try{return JSON.parse(localStorage.getItem(k)||'{}')||{}}catch(e){return {}}};
-  const marks=()=>({...readKey(OLD_KEY),...readKey(MARK_KEY)});
-  const saveMarks=m=>{try{localStorage.setItem(MARK_KEY,JSON.stringify(m));localStorage.removeItem(OLD_KEY)}catch(e){}};
-  window.markPhonePeSplitCreated=function(id){const m=marks();m[String(id)]=true;saveMarks(m);render();mbToast('Marked as Split Created.')};
-  window.undoPhonePeSplitCreated=function(id){const m=marks();delete m[String(id)];saveMarks(m);render();mbToast('Split Created mark undone.')};
+  const lsMarks=()=>({...readKey(OLD_KEY),...readKey(MARK_KEY)});
+  const saveLSMarks=m=>{try{localStorage.setItem(MARK_KEY,JSON.stringify(m));localStorage.removeItem(OLD_KEY)}catch(e){}};
+  const dbSplit=id=>(state.split_transactions||[]).find(s=>String(s.id)===String(id));
+  const missingCreatedCol=e=>/phonepe_created.*schema cache|column.*phonepe_created|could not find.*phonepe_created/i.test(String(e?.message||e||''));
+  const marks=()=>{
+    const m=lsMarks();
+    for(const st of (state.split_transactions||[])){
+      if(Object.prototype.hasOwnProperty.call(st,'phonepe_created')){
+        if(st.phonepe_created) m[String(st.id)]=true; else delete m[String(st.id)];
+      }
+    }
+    return m;
+  };
+  async function setMark(id,val){
+    const st=dbSplit(id);
+    if(st){
+      try{
+        const saved=await update('split_transactions',id,{phonepe_created:val});
+        const idx=(state.split_transactions||[]).findIndex(s=>String(s.id)===String(id));
+        if(idx>-1) state.split_transactions[idx]=saved;
+        return;
+      }catch(e){
+        if(!missingCreatedCol(e)) console.warn('[My Budget] Could not save Create marker to the database, keeping it local only:',e);
+      }
+    }
+    const m=lsMarks(); if(val)m[String(id)]=true; else delete m[String(id)]; saveLSMarks(m);
+  }
+  window.markPhonePeSplitCreated=async function(id){await setMark(id,true);render();mbToast('Marked as Split Created.')};
+  window.undoPhonePeSplitCreated=async function(id){await setMark(id,false);render();mbToast('Split Created mark undone.')};
   const markerBtn=stId=>{
     const id=String(stId).replace(/'/g,"\\'");
     return marks()[String(stId)]
@@ -4158,4 +4221,189 @@ exportPDF=exportPDFPlus;
     (state.categories||[]).filter(c=>!c.parent_id).forEach(p=>window.mbV5BindDrag('categories_sub_'+p.id,'#catgrp-'+safe(p.id),'mbRerenderCategoryList'));
   };
   window.mbShowCategoryList=window.mbRerenderCategoryList;
+})();
+
+
+/* ===== FINAL: Settle button reliability + Settle button on Split rows everywhere =====
+   Two real bugs fixed here:
+
+   1) "Something went wrong with that action" on Settle/Save repayment.
+      The actual cause: some Supabase projects were created before the
+      reimbursements.direction column existed (it was added later by an
+      ALTER TABLE in my_budget_vnext_plus.sql). If that migration was never
+      re-run, saving a repayment throws a schema-cache error from Supabase
+      ("Could not find the 'direction' column of 'reimbursements'..."). That
+      specific error WAS being shown briefly, then instantly overwritten by
+      a generic global-error-handler toast (fixed above), so it looked like
+      a silent, unexplained failure. This wrapper makes Settle/Repay work
+      immediately even on a database that hasn't been migrated yet, by
+      retrying the save without the direction column when that's the cause.
+      "Repay money to them" (direction = sent) is intentionally NOT silently
+      downgraded, since that would misrecord which way the money moved —
+      instead the user gets a clear message to run MIGRATION_ADD_DIRECTION.sql.
+
+   2) Split transactions shown in the Transactions tab / All ledger only had
+      Edit/Delete buttons. The Split tab's cards always had a Settle button,
+      but the same split shown as a normal transaction row (Transactions tab,
+      "Split" filter, or "All") did not. Both places now match.
+   --------------------------------------------------------------------- */
+(function(){
+  const missingColumn=(e,col,table)=>{
+    const msg=String(e?.message||e||'');
+    const re=new RegExp(`${col}.*${table}|${table}.*${col}|could not find.*${col}|schema cache`,'i');
+    return re.test(msg) && new RegExp(col,'i').test(msg);
+  };
+
+  // --- 1) Resilient reimbursements.direction handling ---
+  const baseInsert=window.insert;
+  if(typeof baseInsert==='function'){
+    window.insert=async function(t,row){
+      try{ return await baseInsert(t,row); }
+      catch(e){
+        if(t==='reimbursements' && Object.prototype.hasOwnProperty.call(row||{},'direction') && missingColumn(e,'direction','reimbursements')){
+          if(row.direction==='sent'){
+            throw new Error('Your database is missing the "direction" column on reimbursements, needed to record money you repaid to someone. Please run MIGRATION_ADD_DIRECTION.sql in Supabase (see README), then try again.');
+          }
+          const {direction,...rest}=row;
+          return await baseInsert(t,rest);
+        }
+        throw e;
+      }
+    };
+  }
+  const baseUpdate=window.update;
+  if(typeof baseUpdate==='function'){
+    window.update=async function(t,id,row){
+      try{ return await baseUpdate(t,id,row); }
+      catch(e){
+        if(t==='reimbursements' && Object.prototype.hasOwnProperty.call(row||{},'direction') && missingColumn(e,'direction','reimbursements')){
+          if(row.direction==='sent'){
+            throw new Error('Your database is missing the "direction" column on reimbursements, needed to record money you repaid to someone. Please run MIGRATION_ADD_DIRECTION.sql in Supabase (see README), then try again.');
+          }
+          const {direction,...rest}=row;
+          return await baseUpdate(t,id,rest);
+        }
+        throw e;
+      }
+    };
+  }
+
+  // --- 2) Settle button on split rows in the Transactions tab / All ledger ---
+  const baseTxHTML=window.txHTML;
+  if(typeof baseTxHTML==='function'){
+    window.txHTML=function(t){
+      let html=baseTxHTML(t);
+      if(!t) return html;
+      // Ordinary split rows are plain type:'split' transactions (no __special); rows rebuilt from
+      // split_transactions carry __special:'split'. Resolve the split for both.
+      let splitId=null;
+      if(t.__special==='split'&&t.__specialId) splitId=t.__specialId;
+      else if(t.type==='split'&&!t.__special&&window.__mbInTxTab){
+        const st=(state.split_transactions||[]).find(x=>String(x.transaction_id)===String(t.id));
+        if(st) splitId=st.id;
+      }
+      if(!splitId) return html;
+      // Already has a settle/settled control from some other layer? Don't add a second one.
+      if(/split-settle-btn|✓ Settled/.test(html)) return html;
+      let outstanding=0, known=false;
+      try{
+        const S=typeof window.mbSplitSettlement==='function'?window.mbSplitSettlement():null;
+        const entry=S&&S.info.get(String(splitId));
+        if(entry){outstanding=Number(entry.outstanding||0);known=true}
+      }catch(e){}
+      const btn=outstanding>0.009
+        ? `<button type="button" class="smallbtn split-settle-btn" onclick="settleSplit('${String(splitId).replace(/'/g,"\\'")}')">Settle</button>`
+        : (known?`<button type="button" class="smallbtn" disabled>✓ Settled</button>`:'');
+      if(btn) html=html.replace(/(<div class="action-row">)/,`$1${btn}`);
+      return html;
+    };
+  }
+})();
+
+
+/* ===== FINAL: a settlement is applied to the split it was recorded for =====
+   Repayments are stored per person, and the app used to spread them over that person's splits
+   oldest-first. Clicking Settle on a newer split therefore reduced an OLDER split instead, and the
+   split you clicked still showed as unsettled. Now:
+   - every Settle / repayment form has an "Applies to split" field (pre-selected by the Settle button);
+   - the choice is stored on the settlement's ledger transaction (transactions.related_transaction_id,
+     an existing column) and settlement() applies the payment to that split first;
+   - "Oldest unpaid split first" keeps the previous automatic behaviour.
+   Edit an existing repayment (Transactions -> Reimbursement) to move it to the right split. */
+(function(){
+  const num=v=>{const n=Number(v);return Number.isFinite(n)?n:0};
+  const settle=()=>typeof window.mbSplitSettlement==='function'?window.mbSplitSettlement():null;
+
+  // Splits a payment to/from this person can be applied to, newest first, with what is still unpaid.
+  function splitChoices(pid,direction){
+    const S=settle(); if(!S||!pid)return [];
+    const txById=new Map((state.transactions||[]).map(t=>[String(t.id),t]));
+    const rows=[];
+    for(const e of S.info.values()){
+      const ok=direction==='sent'?String(e.payer)===String(pid):e.payer==='__me__';
+      if(!ok||!Object.prototype.hasOwnProperty.call(e.people,String(pid)))continue;
+      const tx=txById.get(String(e.st.transaction_id));
+      rows.push({value:String(e.st.transaction_id),date:String(tx?.transaction_date||e.st.created_at||'').slice(0,10),
+        label:`${tx?.description||'Split'} · ${tx?.transaction_date?fmtDate(tx.transaction_date):''} · ${money(e.people[String(pid)]||0)} unpaid`});
+    }
+    return rows.sort((a,b)=>b.date.localeCompare(a.date));
+  }
+
+  const baseOpen=window.openModal;
+  window.openModal=function(type,data=null){
+    const result=baseOpen.apply(this,arguments);
+    if(type!=='repayment'&&type!=='repaymentEdit')return result;
+    try{
+      const f=document.getElementById('f');
+      if(!f||!f.elements.person_id||f.elements.applies_to_split_tx)return result;
+      const wrap=document.createElement('div');
+      wrap.innerHTML='<label>Applies to split</label><select name="applies_to_split_tx"></select>';
+      const notes=f.elements.notes;
+      const anchor=notes&&notes.previousElementSibling&&notes.previousElementSibling.tagName==='LABEL'?notes.previousElementSibling:notes;
+      if(anchor&&anchor.parentNode)anchor.parentNode.insertBefore(wrap,anchor);else f.prepend(wrap);
+      const sel=f.elements.applies_to_split_tx;
+      const fill=preferred=>{
+        const dir=f.elements.reimbursement_direction?f.elements.reimbursement_direction.value:'received';
+        const keep=preferred!==undefined?preferred:sel.value;
+        const choices=splitChoices(f.elements.person_id.value,dir);
+        sel.innerHTML='<option value="">Oldest unpaid split first (automatic)</option>'+choices.map(c=>`<option value="${esc(c.value)}">${esc(c.label)}</option>`).join('');
+        sel.value=choices.some(c=>c.value===String(keep))?String(keep):'';
+      };
+      f.__mbFillApplies=fill;
+      fill(data&&data.related_transaction_id?String(data.related_transaction_id):'');
+      f.elements.person_id.addEventListener('change',()=>fill());
+      if(f.elements.reimbursement_direction)f.elements.reimbursement_direction.addEventListener('change',()=>fill());
+    }catch(err){console.warn('[My Budget] Applies-to-split field skipped:',err)}
+    return result;
+  };
+
+  // The Settle button pre-selects the split it belongs to.
+  const baseSettleSplit=window.settleSplit;
+  window.settleSplit=function(splitId){
+    baseSettleSplit.apply(this,arguments);
+    try{
+      const f=document.getElementById('f'),e=settle()?.info.get(String(splitId));
+      if(f&&e&&typeof f.__mbFillApplies==='function')f.__mbFillApplies(String(e.st.transaction_id));
+    }catch(err){console.warn('[My Budget] Could not pre-select split:',err)}
+  };
+
+  // Store the choice on the settlement's ledger transaction.
+  const baseSave=window.saveModal;
+  window.saveModal=async function(type,data,f){
+    const result=await baseSave.apply(this,arguments);
+    if(type!=='repayment'&&type!=='repaymentEdit')return result;
+    const field=f&&f.elements&&f.elements.applies_to_split_tx;
+    if(!field)return result;
+    const target=field.value||null, current=(type==='repaymentEdit'&&data&&data.related_transaction_id)||null, txId=(result&&result.id)||(data&&data.id);
+    if(!txId||(target||null)===(current||null))return result;
+    try{
+      const {error}=await sb.from('transactions').update({related_transaction_id:target}).eq('id',txId).eq('user_id',user.id);
+      if(error)throw error;
+    }catch(err){
+      console.warn('[My Budget] Could not link settlement to its split:',err);
+      // The payment itself is saved; tell the user it fell back to "oldest split first".
+      setTimeout(()=>mbToast('Payment saved, but it could not be linked to that split ('+friendlyError(err)+'). It was applied to the oldest unpaid split instead.','error'),900);
+    }
+    return result;
+  };
 })();
