@@ -1648,7 +1648,19 @@ exportPDF=exportPDFPlus;
     return result;
   }
 
-  function categoryKeyMatch(t,catId){return txAllocations(t).some(x=>{const c=state.categories.find(q=>q.id===x.category_id);return x.category_id===catId||rootCategory(c)?.id===catId})}
+  function categoryKeyMatch(t,catId){
+  if(!catId)return true;
+  const ids=txAllocations(t).map(x=>x.category_id).filter(Boolean);
+  return ids.some(id=>{
+    if(String(id)===String(catId))return true;
+    let c=state.categories.find(q=>String(q.id)===String(id)),guard=0;
+    while(c && c.parent_id && guard++<20){
+      if(String(c.parent_id)===String(catId))return true;
+      c=state.categories.find(q=>String(q.id)===String(c.parent_id));
+    }
+    return false;
+  });
+}
 
   window.renderTransactions=function(){
     const active=mbFilter.type||'All',kind=mbFilter.kind||'all';
@@ -1660,7 +1672,7 @@ exportPDF=exportPDFPlus;
     else if(active!=='All')arr=arr.filter(t=>t.type===active);
     if(mbFilter.from)arr=arr.filter(t=>String(t.transaction_date).slice(0,10)>=mbFilter.from);
     if(mbFilter.to)arr=arr.filter(t=>String(t.transaction_date).slice(0,10)<=mbFilter.to);
-    if(mbFilter.category)arr=arr.filter(t=>!t.__special&&categoryKeyMatch(t,mbFilter.category));
+    if(mbFilter.category)arr=arr.filter(t=>!t.__special&&txAllocations(t).some(x=>categoryMatchesBudget(x.category_id,mbFilter.category)));
     if(mbFilter.subcategory)arr=arr.filter(t=>!t.__special&&txAllocations(t).some(x=>x.category_id===mbFilter.subcategory));
     if(mbFilter.account)arr=arr.filter(t=>t.account_id===mbFilter.account||t.to_account_id===mbFilter.account||(state.transaction_accounts||[]).some(x=>x.transaction_id===t.id&&x.account_id===mbFilter.account));
     if(mbFilter.person)arr=arr.filter(t=>t.person_id===mbFilter.person||(!t.__special&&state.split_participants.some(x=>x.person_id===mbFilter.person&&state.split_transactions.some(st=>st.id===x.split_transaction_id&&st.transaction_id===t.id))));
@@ -1996,13 +2008,17 @@ exportPDF=exportPDFPlus;
       const f=$('f');
       if(f){
         const amount=f.elements.amount;
-        const label=amount?.closest('label');
         const account= f.elements.account_id;
-        const paidInLabel=account?.closest('label');
+        // Labels here are siblings of the inputs (not wrappers), so find them by position.
+        const labelFor=el=>el?.closest('label')||(el?.previousElementSibling?.tagName==='LABEL'?el.previousElementSibling:null);
+        const label=labelFor(amount);
+        const paidInLabel=labelFor(account);
         const wrap=document.createElement('div');
         wrap.innerHTML=`<label>Settlement type</label><select name="reimbursement_direction" id="reimbursementDirection"><option value="received">Receive money from them</option><option value="sent">Repay money to them</option></select><div class="notice" id="reimbursementHelp">Receiving money reduces what they owe you.</div>`;
-        const target=label||paidInLabel||amount?.parentElement;
-        target?.parentNode?.insertBefore(wrap,target);
+        // Insert the Receive/Repay selector INSIDE the form (it used to land outside it,
+        // which made this modal throw and hid the "Repay money to them" option).
+        const target=label||paidInLabel||amount;
+        if(target&&target.parentNode)target.parentNode.insertBefore(wrap,target);else f.prepend(wrap);
         const dir=f.elements.reimbursement_direction;
         dir.value=data?.reimbursement_direction || data?.reimbursement?.direction || 'received';
         const sync=()=>{const sent=dir.value==='sent';if(label)label.textContent='Amount '+(sent?'repaid':'received');if(paidInLabel)paidInLabel.textContent='Account '+(sent?'paid from':'received into');const h=$('reimbursementHelp');if(h)h.textContent=sent?'This reduces what you owe them and reduces the selected account balance. It does not add another category expense.':'This reduces what they owe you and increases the selected account balance.'};
@@ -2840,7 +2856,7 @@ exportPDF=exportPDFPlus;
       // timestamp without requiring a new database column.
       if(h.status==='settled' && h.settled_date){
         const settlementAt=h.settled_at||h.updated_at||(`${String(h.settled_date).slice(0,10)}T23:59:59+05:30`);
-        rows.push({id:`held-settlement-${h.id}`,type:'money_held_settlement',amount:Number(h.amount||0),description:`Money Held paid to ${personName(h.person_id)}`,transaction_date:h.settled_date,account_id:h.account_id||null,created_at:settlementAt,updated_at:null,notes:h.purpose||h.notes||'',status:'settled',person_id:h.person_id,__special:'held_settlement',__specialId:h.id});
+        rows.push({id:`held-settlement-${h.id}`,type:'money_held_settlement',amount:Number(h.amount||0),description:`Money Held paid to ${personName(h.person_id)}`,transaction_date:h.settled_date,account_id:h.account_id||null,created_at:settlementAt,updated_at:h.updated_at||null,notes:h.purpose||h.notes||'',status:'settled',person_id:h.person_id,__special:'held_settlement',__specialId:h.id});
       }
     });
     return rows.sort((a,b)=>recMs(b)-recMs(a)||String(b.id).localeCompare(String(a.id)));
@@ -2866,8 +2882,11 @@ exportPDF=exportPDFPlus;
     return out;
   }
   function specialAction(t){
-    if(t.__special==='held')return `<button class="smallbtn" onclick="editMoneyHeld('${t.__specialId}')">Edit</button><button class="smallbtn" onclick="toggleMoneyHeld('${t.__specialId}')">Settle</button><button class="smallbtn dangerbtn" onclick="deleteMoneyHeld('${t.__specialId}')">Delete</button>`;
-    if(t.__special==='held_settlement')return `<button class="smallbtn" onclick="editMoneyHeld('${t.__specialId}')">Edit</button><button class="smallbtn" onclick="toggleMoneyHeld('${t.__specialId}')">Undo</button>`;
+    if(t.__special==='held'){
+      const settleAction=t.status==='settled' ? 'Undo' : 'Settle';
+      return `<button class="smallbtn" onclick="editMoneyHeld('${t.__specialId}')">Edit</button><button class="smallbtn" onclick="toggleMoneyHeld('${t.__specialId}')">${settleAction}</button><button class="smallbtn dangerbtn" onclick="deleteMoneyHeld('${t.__specialId}')">Delete</button>`;
+    }
+    if(t.__special==='held_settlement')return `<button class="smallbtn" onclick="editMoneyHeld('${t.__specialId}',true)">Edit</button><button class="smallbtn" onclick="toggleMoneyHeld('${t.__specialId}')">Undo</button>`;
     if(t.__special==='loan')return `<button class="smallbtn" onclick="editLoan('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteLoan('${t.__specialId}')">Delete</button>`;
     if(t.__special==='loan_repayment')return `<button class="smallbtn" onclick="editLoanRepayment('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteLoanRepayment('${t.__specialId}')">Delete</button>`;
     if(t.__special==='split')return `<button class="smallbtn" onclick="editSplitSpecial('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteSplitSpecial('${t.__specialId}')">Delete</button>`;
@@ -2875,11 +2894,15 @@ exportPDF=exportPDFPlus;
   }
   function rowHTML(t,balances){
     let meta='',icon='•',cls=t.type,desc=t.description||'(No description)';
-    if(t.__special==='loan'){icon='↔';cls='transfer';meta=(t.direction==='lend'?'Lend':'Borrow')+` · ${personName(t.person_id)}`;}
-    else if(t.__special==='loan_repayment'){icon='↩';cls='income';meta=(t.direction==='received'?'Loan repayment received':'Loan repayment sent')+` · ${personName(t.person_id)}`;}
-    else if(t.__special==='held'){icon='💰';cls='income';meta=`Money Held · Received · ${t.status==='settled'?'Settled':'Pending'} · ${personName(t.person_id)}`;}
-    else if(t.__special==='held_settlement'){icon='💸';cls='expense';meta=`Money Held · Paid/Settled · ${personName(t.person_id)}`;}
-    else if(t.__special==='split'){icon='🔀';cls='split';const st=state.split_transactions.find(x=>x.id===t.__specialId);const payer=st?payerForSplit(st):'__me__';meta=`Split · Paid by ${payer==='__me__'?'Me':personName(payer)} · Your share ${money(st?.my_share||0)}`;}
+    if(t.__special==='loan'){icon=t.direction==='lend'?'↗':'↙';cls='transfer';meta=(t.direction==='lend'?'Lend':'Borrow')+` · ${personName(t.person_id)}`;}
+    else if(t.__special==='loan_repayment'){icon=t.direction==='received'?'+':'−';cls=t.direction==='received'?'income':'expense';meta=(t.direction==='received'?'Loan repayment received':'Loan repayment sent')+` · ${personName(t.person_id)}`;}
+    else if(t.__special==='held'){icon='⏳';cls='income';meta=`Money Held · Received · ${t.status==='settled'?'Settled':'Pending'} · ${personName(t.person_id)}`;}
+    else if(t.__special==='held_settlement'){icon='−';cls='expense';meta=`Money Held · Paid/Settled · ${personName(t.person_id)}`;}
+    else if(t.__special==='split'){icon='÷';cls='split';const st=state.split_transactions.find(x=>x.id===t.__specialId);const payer=st?payerForSplit(st):'__me__';meta=`Split · Paid by ${payer==='__me__'?'Me':personName(payer)} · Your share ${money(st?.my_share||0)}`;}
+    else if(t.type==='income'){icon='+';cls='income';meta=accountAllocationSummary(t);}
+    else if(t.type==='expense'){icon='−';cls='expense';meta=accountAllocationSummary(t);}
+    else if(t.type==='transfer'){icon='⇄';cls='transfer';meta=accountAllocationSummary(t);}
+    else if(t.type==='reimbursement'){icon='↩';cls='income';meta=accountAllocationSummary(t);}
     else {meta=accountAllocationSummary(t);}
     const bm=balances.get(t.id), ids=[];if(t.account_id)ids.push(t.account_id);if(t.to_account_id)ids.push(t.to_account_id);
     const bal=[...new Set(ids)].map(id=>bm?.has(id)?`${esc(accountName(id))}: ${money(bm.get(id))}`:'').filter(Boolean).join(' · ');
@@ -2898,7 +2921,7 @@ exportPDF=exportPDFPlus;
     else if(active!=='All')arr=arr.filter(t=>t.type===active);
     if(mbFilter.from)arr=arr.filter(t=>String(t.transaction_date).slice(0,10)>=mbFilter.from);
     if(mbFilter.to)arr=arr.filter(t=>String(t.transaction_date).slice(0,10)<=mbFilter.to);
-    if(mbFilter.category)arr=arr.filter(t=>!t.__special&&categoryKeyMatch(t,mbFilter.category));
+    if(mbFilter.category)arr=arr.filter(t=>!t.__special&&txAllocations(t).some(x=>categoryMatchesBudget(x.category_id,mbFilter.category)));
     if(mbFilter.subcategory)arr=arr.filter(t=>!t.__special&&txAllocations(t).some(x=>x.category_id===mbFilter.subcategory));
     if(mbFilter.account)arr=arr.filter(t=>t.account_id===mbFilter.account||t.to_account_id===mbFilter.account||(state.transaction_accounts||[]).some(x=>x.transaction_id===t.id&&x.account_id===mbFilter.account));
     if(mbFilter.person)arr=arr.filter(t=>t.person_id===mbFilter.person||(!t.__special&&state.split_participants.some(x=>x.person_id===mbFilter.person&&state.split_transactions.some(st=>st.id===x.split_transaction_id&&st.transaction_id===t.id))));
@@ -3118,7 +3141,7 @@ exportPDF=exportPDFPlus;
           if(amt>remaining+.01)throw new Error('Settlement amount cannot exceed the remaining held amount.');
           const newSettled=Number(h.settled_amount||0)+amt;
           const stamp=toISO(x.settlement_timestamp);
-          const row={settled_amount:newSettled,status:newSettled>=Number(h.amount)-.009?'settled':'pending',settled_date:String(x.settlement_timestamp||'').slice(0,10),notes:h.notes||null};
+          const now=new Date().toISOString(); const row={settled_amount:newSettled,status:newSettled>=Number(h.amount)-.009?'settled':'pending',settled_date:String(x.settlement_timestamp||'').slice(0,10),notes:h.notes||null,updated_at:now};
           const saved=await updateSettlement(id,row,stamp);
           const idx=state.money_held.findIndex(q=>q.id===id);if(idx>-1)state.money_held[idx]=saved;
           closeModal();render();mbToast(newSettled>=Number(h.amount)-.009?'Money held fully settled.':'Partial settlement saved.');
@@ -3161,4 +3184,236 @@ exportPDF=exportPDFPlus;
       finally{if(btn)btn.disabled=false}
     };
   };
+})();
+
+
+/* ===== FINAL TRANSACTION / BUDGET LOGIC FIX =====
+   1) Budget: Remaining Before Split = normal expenses + settled split shares.
+      Remaining After Split additionally adds unsettled receivables and subtracts
+      unsettled payables.
+   2) Transaction filters: parent + subcategory + recurring are robust.
+   3) All ledger: always includes loans, loan repayments, Money Held settlement,
+      and uses Recorded timestamp for chronology.
+   4) Mobile transaction bubbles use visible text symbols instead of emoji glyphs.
+*/
+(function(){
+  const num=v=>{const n=Number(v||0);return Number.isFinite(n)?n:0};
+  const inRange=(d,a,z)=>{const x=String(d||'').slice(0,10);return (!a||x>=a)&&(!z||x<=z)};
+  // Parent/sub category match for the Transactions filter. (Previously this helper lived
+  // in a different closure, so choosing a Parent category threw "categoryKeyMatch is not defined".)
+  const categoryKeyMatch=(t,catId)=>{
+    if(!catId)return true;
+    const target=String(catId);
+    return txAllocations(t).some(x=>{
+      let id=x.category_id, guard=0;
+      while(id&&guard++<20){
+        if(String(id)===target)return true;
+        const c=(state.categories||[]).find(q=>String(q.id)===String(id));
+        id=c?c.parent_id:null;
+      }
+      return false;
+    });
+  };
+  const payerOf=st=>typeof window.splitPayerForSplit==='function'?window.splitPayerForSplit(st):(state.transactions.find(t=>t.id===st?.transaction_id)?.person_id||'__me__');
+  // How much of each participant's share is STILL unpaid after applying the
+  // reimbursements received from that person (oldest split first). Repayments are
+  // recorded per person, so they are spread across that person's splits FIFO.
+  const receivableOutstandingMap=()=>{
+    const out=new Map(), byPerson=new Map();
+    const splitTx=st=>(state.transactions||[]).find(tt=>tt.id===st.transaction_id);
+    const splitDate=st=>String(splitTx(st)?.transaction_date||st.created_at||'').slice(0,10);
+    for(const st of (state.split_transactions||[])){
+      if(payerOf(st)!=='__me__')continue;
+      for(const p of (state.split_participants||[])){
+        if(p.split_transaction_id!==st.id||!p.person_id)continue;
+        if(!byPerson.has(p.person_id))byPerson.set(p.person_id,[]);
+        byPerson.get(p.person_id).push({p,st,d:splitDate(st)});
+      }
+    }
+    for(const [pid,rows] of byPerson){
+      rows.sort((x,y)=>x.d.localeCompare(y.d)||String(x.st.created_at||'').localeCompare(String(y.st.created_at||''))||String(x.p.id).localeCompare(String(y.p.id)));
+      let pool=(state.reimbursements||[]).filter(r=>r.person_id===pid&&r.direction!=='sent').reduce((s,r)=>s+num(r.amount),0);
+      for(const {p} of rows){
+        const base=Math.max(0,num(p.amount)-num(p.amount_paid));
+        const applied=Math.min(base,pool);
+        pool-=applied;
+        const left=Math.round((base-applied)*100)/100;
+        out.set(p.id,left<0.01?0:left);
+      }
+    }
+    return out;
+  };
+  const splitInfoForBudget=(b,a,z)=>{
+    let settledSpend=0, receivable=0, payable=0, hasSplit=false;
+    const recvOutstanding=receivableOutstandingMap();
+    const reimbursements=(state.reimbursements||[]).filter(r=>r.direction==='sent'&&inRange(r.reimbursement_date||r.created_at,a,z));
+    for(const t of (state.transactions||[])){
+      if(t.type!=='split'||!inRange(t.transaction_date||t.created_at,a,z)) continue;
+      const st=state.split_transactions.find(x=>x.transaction_id===t.id); if(!st) continue;
+      const alloc=txAllocations(t).filter(x=>categoryMatchesBudget(x.category_id,b.subcategory_id||b.category_id));
+      if(!alloc.length) continue;
+      const myShare=num(st.my_share||splitMyShare(t)); if(myShare<=0) continue;
+      const payer=payerOf(st);
+      if(payer==='__me__'){
+        // My own share is an actual expense. Other people's unpaid shares are
+        // receivables and are added back only in Remaining After Split.
+        settledSpend+=myShare;
+        // Money already received back is stored as person-level reimbursements
+        // (not in split_participants.amount_paid), so use the settlement-aware
+        // outstanding amount, the same basis the People tab uses.
+        const outstanding=(state.split_participants||[])
+          .filter(x=>x.split_transaction_id===st.id)
+          .reduce((s,x)=>s+(recvOutstanding.has(x.id)?recvOutstanding.get(x.id):Math.max(0,num(x.amount)-num(x.amount_paid))),0);
+        receivable+=outstanding;
+        hasSplit=true;
+      }else{
+        // If someone else paid, my share is a payable until I reimburse them.
+        // Allocate repayments to this payer across their outstanding splits in
+        // chronological order so one repayment cannot be counted twice.
+        const priorSplits=(state.split_transactions||[])
+          .filter(s2=>payerOf(s2)===payer && inRange(state.transactions.find(tt=>tt.id===s2.transaction_id)?.transaction_date||s2.created_at,a,z))
+          .sort((x,y)=>String(state.transactions.find(tt=>tt.id===x.transaction_id)?.transaction_date||x.created_at||'').localeCompare(String(state.transactions.find(tt=>tt.id===y.transaction_id)?.transaction_date||y.created_at||'')));
+        let repPool=0;
+        for(const r of reimbursements.filter(r=>r.person_id===payer)) repPool+=num(r.amount);
+        let allocatedBefore=0;
+        for(const ps of priorSplits){
+          const share=num(ps.my_share); if(!share) continue;
+          const paid=Math.min(share,Math.max(0,repPool-allocatedBefore));
+          allocatedBefore+=paid;
+          if(ps.id===st.id){
+            settledSpend+=paid;
+            payable+=Math.max(0,share-paid);
+            hasSplit=true;
+            break;
+          }
+        }
+      }
+    }
+    return {settledSpend,receivable,payable,hasSplit};
+  };
+
+  // Replace the budget calculations used by the final Budget renderer.
+  window.__mbBudgetSplitLogic=splitInfoForBudget;
+  window.budgetHTML=function(b){
+    const [a,z]=periodRange(b.period,b), amount=num(b.amount);
+    const target=b.subcategory_id||b.category_id;
+    const normalSpent=state.transactions.filter(t=>t.type==='expense'&&inRange(t.transaction_date,a,z))
+      .reduce((sum,t)=>sum+txAllocations(t).filter(x=>!target||categoryMatchesBudget(x.category_id,target)).reduce((s,x)=>s+num(x.amount),0),0);
+    const d=splitInfoForBudget(b,a,z);
+    const spentBefore=normalSpent+d.settledSpend;
+    const remBefore=amount-spentBefore;
+    const remAfter=remBefore+d.receivable-d.payable;
+    const spentAfter=spentBefore;
+    const pct=amount>0?spentAfter/amount*100:0;
+    const cls=spentAfter>amount?'over':spentAfter>=amount*.8?'near':'good';
+    return `<div class="row budget-row"><div class="budget-main"><div class="total-line"><span><b>${esc(b.name)}</b><div class="sub">${esc(budgetCategoryLabel(b))} · ${b.period}</div></span></div><div class="budget-progress-line"><div class="progress"><div class="bar ${cls}" style="width:${Math.min(100,Math.max(0,pct))}%"></div></div><span class="badge status-${cls}">${pct.toFixed(0)}%</span></div><div class="budget-amounts"><span class="budget-amount budget-spent">Spent <b class="red">${money(spentAfter)}</b></span><span class="budget-amount budget-limit">Budget <b class="purple">${money(amount)}</b></span></div><div class="budget-amounts budget-amounts-split"><span class="budget-amount budget-remaining">Remaining · before split<b class="${remBefore>=0?'green':'red'}">${money(remBefore)}</b></span><span class="budget-amount ${remAfter<0?'budget-remaining-over':'budget-remaining'}">Remaining · after split<b class="${remAfter>=0?'green':'red'}">${money(remAfter)}</b></span></div>${d.hasSplit?(d.receivable>0||d.payable>0?`<div class="sub" style="margin-top:6px">Unsettled: ${d.receivable>0?`<span class="green">+${money(d.receivable)} receivable</span>`:'no receivable'} · ${d.payable>0?`<span class="red">−${money(d.payable)} payable</span>`:'no payable'}</div>`:`<div class="sub" style="margin-top:6px"><span class="green">✓ All shared-bill amounts settled</span></div>`):''}</div><div class="action-row"><button class="smallbtn" onclick="editBudget('${b.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteBudget('${b.id}')">Delete</button></div></div>`;
+  };
+
+  // Robust transaction filter modal with both parent and subcategory selectors.
+  window.openTransactionFilters=function(){
+    const parents=categoryPool('expense').filter(c=>!c.parent_id);
+    const subs=categoryPool('expense').filter(c=>c.parent_id);
+    openModalRaw(`<h2>Filter transactions</h2><form id="filterForm"><label>From date</label><input type="date" name="from" value="${esc(mbFilter.from||'')}"><label>To date</label><input type="date" name="to" value="${esc(mbFilter.to||'')}"><label>Type</label><select name="type"><option value="All" ${!mbFilter.type||mbFilter.type==='All'?'selected':''}>All</option><option value="income" ${mbFilter.type==='income'?'selected':''}>Income</option><option value="expense" ${mbFilter.type==='expense'?'selected':''}>Expense</option><option value="transfer" ${mbFilter.type==='transfer'?'selected':''}>Transfer</option><option value="split" ${mbFilter.type==='split'?'selected':''}>Split</option><option value="reimbursement" ${mbFilter.type==='reimbursement'?'selected':''}>Reimbursement</option></select><label>Parent category</label><select name="category" id="txFilterParent"><option value="">All parent categories</option>${parents.map(c=>`<option value="${esc(c.id)}" ${mbFilter.category===c.id?'selected':''}>${esc(c.icon||'🏷️')} ${esc(c.name)}</option>`).join('')}</select><label>Subcategory</label><select name="subcategory" id="txFilterSub"></select><label>Account</label>${sel('account',state.accounts,mbFilter.account||'',false)}<label>Person</label>${sel('person',state.people,mbFilter.person||'',false)}<label>Description contains</label><input name="description" value="${esc(mbFilter.description||'')}"><label>Special</label><select name="kind"><option value="all" ${mbFilter.kind==='all'?'selected':''}>All</option><option value="held" ${mbFilter.kind==='held'?'selected':''}>Held for others</option><option value="lendborrow" ${mbFilter.kind==='lendborrow'?'selected':''}>Lend / Borrow</option><option value="recurring" ${mbFilter.kind==='recurring'?'selected':''}>Recurring transactions only</option></select><div class="action-row"><button type="button" class="secondary" onclick="clearAllTransactionFilters();closeModal()">Clear</button><button class="primary">Apply filters</button></div></form>`);
+    const f=$('filterForm');
+    // Subcategory choices depend on the selected parent (all subcategories when no parent is chosen).
+    const fillSubs=keep=>{
+      const pid=$('txFilterParent').value,list=pid?subs.filter(c=>String(c.parent_id)===String(pid)):subs;
+      $('txFilterSub').innerHTML='<option value="">All subcategories</option>'+list.map(c=>`<option value="${esc(c.id)}">${esc(c.icon||'↳')} ${pid?'':esc(catName(c.parent_id))+' → '}${esc(c.name)}</option>`).join('');
+      if(keep&&list.some(c=>String(c.id)===String(keep)))$('txFilterSub').value=keep;
+    };
+    fillSubs(mbFilter.subcategory);
+    $('txFilterParent').onchange=()=>fillSubs('');
+    f.onsubmit=e=>{e.preventDefault();const x=Object.fromEntries(new FormData(f));mbFilter={...mbFilter,...x};mbFilter.type=x.type||'All';mbFilter.kind=x.kind||'all';closeModal();renderTransactions()};
+  };
+
+  // Final unified ledger. Loans/borrow records are always present even if they
+  // predate created_at; settlement is a separate Money Held event.
+  function finalRows(){
+    const rows=state.transactions.map(t=>({...t,__special:null}));
+    const ids=new Set(state.transactions.map(t=>String(t.id)));
+    for(const st of state.split_transactions){
+      if(!st.transaction_id||ids.has(String(st.transaction_id)))continue;
+      const tx=state.transactions.find(t=>t.id===st.transaction_id);
+      rows.push({id:st.transaction_id,type:'split',amount:num(st.total_amount),description:'Split transaction',transaction_date:tx?.transaction_date||localDate(st.created_at)||today(),account_id:tx?.account_id||null,created_at:st.created_at||tx?.created_at||tx?.transaction_date,updated_at:st.updated_at||tx?.updated_at,__special:'split',__specialId:st.id,person_id:tx?.person_id||null});
+    }
+    for(const l of state.loans){rows.push({id:`loan-${l.id}`,type:'loan',amount:num(l.amount),description:l.direction==='lend'?`Lent to ${personName(l.person_id)}`:`Borrowed from ${personName(l.person_id)}`,transaction_date:l.loan_date||localDate(l.created_at)||today(),account_id:l.account_id||null,created_at:l.created_at||l.loan_date,updated_at:l.updated_at,notes:l.notes||'',direction:l.direction,person_id:l.person_id,__special:'loan',__specialId:l.id});}
+    for(const r of state.loan_repayments){rows.push({id:`loan-repayment-${r.id}`,type:'loan_repayment',amount:num(r.amount),description:r.direction==='received'?`Loan repayment received from ${personName(r.person_id)}`:`Loan repayment sent to ${personName(r.person_id)}`,transaction_date:r.repayment_date||localDate(r.created_at)||today(),account_id:r.account_id||null,created_at:r.created_at||r.repayment_date,updated_at:r.updated_at,notes:r.notes||'',direction:r.direction,person_id:r.person_id,__special:'loan_repayment',__specialId:r.id});}
+    for(const h of state.money_held){
+      const __heldSettled=String(h.status||'').toLowerCase()==='settled'||(Number(h.amount||0)>0&&Number(h.settled_amount||0)>=Number(h.amount||0)-.009); rows.push({id:`held-${h.id}`,type:'money_held',amount:num(h.amount),description:`Money held for ${personName(h.person_id)}`,transaction_date:h.received_date||localDate(h.created_at)||today(),account_id:h.account_id||null,created_at:h.created_at||h.received_date,updated_at:h.updated_at,notes:h.purpose||h.notes||'',status:__heldSettled?'settled':'pending',person_id:h.person_id,__special:'held',__specialId:h.id});
+      if(h.status==='settled'&&h.settled_date){
+        rows.push({id:`held-settlement-${h.id}`,type:'money_held_settlement',amount:num(h.amount),description:`Money Held paid to ${personName(h.person_id)}`,transaction_date:h.settled_date,account_id:h.account_id||null,created_at:h.settled_at||h.updated_at||`${String(h.settled_date).slice(0,10)}T23:59:59+05:30`,updated_at:h.updated_at||null,notes:h.purpose||h.notes||'',person_id:h.person_id,__special:'held_settlement',__specialId:h.id});
+      }
+    }
+    return rows.sort((a,b)=>(Date.parse(b.created_at||b.transaction_date||'')||0)-(Date.parse(a.created_at||a.transaction_date||'')||0)||String(b.id).localeCompare(String(a.id)));
+  }
+
+  const iconFor=t=>{
+    if(t.__special==='loan')return t.direction==='lend'?'↗':'↙';
+    if(t.__special==='loan_repayment')return t.direction==='received'?'+':'−';
+    if(t.__special==='held')return '+';
+    if(t.__special==='held_settlement')return '−';
+    if(t.__special==='split'||t.type==='split')return '÷';
+    if(t.type==='income')return '+';
+    if(t.type==='expense')return '−';
+    if(t.type==='transfer')return '⇄';
+    if(t.type==='reimbursement')return '↩';
+    return '•';
+  };
+  const iconClass=t=>{
+    if(t.type==='income'||(t.__special==='loan_repayment'&&t.direction==='received'))return 'income';
+    if(t.type==='expense'||t.type==='split'||t.__special==='held_settlement'||(t.__special==='loan'&&t.direction==='lend')||(t.__special==='loan_repayment'&&t.direction==='sent'))return 'expense';
+    if(t.type==='transfer'||t.__special==='loan')return 'transfer';
+    if(t.__special==='held')return 'income';
+    if(t.type==='reimbursement')return 'income';
+    return 'split';
+  };
+  window.txHTML=function(t){
+    if(t&&t.__special==='held'){
+      const h=state.money_held.find(x=>String(x.id)===String(t.__specialId));
+      if(h){
+        const fully=String(h.status||'').toLowerCase()==='settled'||(Number(h.amount||0)>0&&Number(h.settled_amount||0)>=Number(h.amount||0)-.009);
+        t={...t,status:fully?'settled':'pending'};
+      }
+    }
+    const icon=iconFor(t), cls=iconClass(t), sign=(t.__special==='loan'?(t.direction==='borrow'?'+':'−'):t.__special==='loan_repayment'?(t.direction==='received'?'+':'−'):t.__special==='held'?' +':t.__special==='held_settlement'?'−':t.type==='income'||t.type==='reimbursement'?'+':t.type==='expense'||t.type==='split'?'−':'');
+    let meta='';
+    if(t.__special==='loan')meta=`${t.direction==='lend'?'Lend':'Borrow'} · ${personName(t.person_id)}`;
+    else if(t.__special==='loan_repayment')meta=`${t.direction==='received'?'Loan repayment received':'Loan repayment sent'} · ${personName(t.person_id)}`;
+    else if(t.__special==='held')meta=`Money Held · Received · ${t.status==='settled'?'Settled':'Pending'} · ${personName(t.person_id)}`;
+    else if(t.__special==='held_settlement')meta=`Money Held · Paid/Settled · ${personName(t.person_id)}`;
+    else if(t.__special==='split'){const st=state.split_transactions.find(x=>x.id===t.__specialId);meta=`Split · Paid by ${payerOf(st)==='__me__'?'Me':personName(payerOf(st))} · Your share ${money(st?.my_share||0)}`;}
+    else meta=accountAllocationSummary(t);
+    const stamp=`<div class="sub timestamp-meta">Recorded: ${esc(fmtDateTime(t.created_at||t.transaction_date))}${t.updated_at?` · Updated: ${esc(fmtDateTime(t.updated_at))}`:''}</div>`;
+    const cats=!t.__special?txAllocations(t).map(a=>catName(a.category_id)).filter(Boolean):[];
+    let action='';
+    if(t.__special==='loan')action=`<button class="smallbtn" onclick="editLoan('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteLoan('${t.__specialId}')">Delete</button>`;
+    else if(t.__special==='loan_repayment')action=`<button class="smallbtn" onclick="editLoanRepayment('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteLoanRepayment('${t.__specialId}')">Delete</button>`;
+    else if(t.__special==='held')action=`<button class="smallbtn" onclick="editMoneyHeld('${t.__specialId}')">Edit</button><button class="smallbtn" onclick="toggleMoneyHeld('${t.__specialId}')">${t.status==='settled'?'Undo':'Settle'}</button><button class="smallbtn dangerbtn" onclick="deleteMoneyHeld('${t.__specialId}')">Delete</button>`;
+    else if(t.__special==='held_settlement')action=`<button class="smallbtn" onclick="editMoneyHeld('${t.__specialId}',true)">Edit</button><button class="smallbtn" onclick="toggleMoneyHeld('${t.__specialId}')">Undo</button>`;
+    else if(t.__special==='split')action=`<button class="smallbtn" onclick="editSplitSpecial('${t.__specialId}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteSplitSpecial('${t.__specialId}')">Delete</button>`;
+    else action=`<button class="smallbtn" onclick="editTx('${t.id}')">Edit</button><button class="smallbtn dangerbtn" onclick="deleteTx('${t.id}')">Delete</button>`;
+    return `<div class="row transaction-row"><div class="left"><div class="bubble ${cls} mb-tx-icon">${icon}</div><div class="tx-content"><div class="name">${esc(t.description||'(No description)')}</div><div class="sub">${esc(meta)}</div>${t.account_id?`<div class="sub">Account: ${esc(accountName(t.account_id))}</div>`:''}${cats.length?`<div class="sub">Category: ${esc(cats.join(', '))}</div>`:''}${stamp}${t.notes?`<div class="sub">${esc(t.notes)}</div>`:''}</div></div><div class="tx-right" style="text-align:right"><b class="${sign==='+'?'green':sign==='−'?'red':''}">${sign}${money(t.amount)}</b><div class="action-row">${action}</div></div></div>`;
+  };
+
+  window.renderTransactions=function(){
+    const active=mbFilter.type||'All',kind=mbFilter.kind||'all';
+    const types=['All','income','expense','transfer','split','reimbursement'];
+    $('filters').innerHTML=types.map(x=>`<button class="chip ${kind==='all'&&active===x?'active':''}" onclick="mbFilter.type='${x}';mbFilter.kind='all';renderTransactions()">${x==='All'?'All':x[0].toUpperCase()+x.slice(1)}</button>`).join('')+`<button class="chip ${kind==='held'?'active':''}" onclick="mbFilter.type='All';mbFilter.kind='held';renderTransactions()">Held for others</button><button class="chip ${kind==='lendborrow'?'active':''}" onclick="mbFilter.type='All';mbFilter.kind='lendborrow';renderTransactions()">Lend / Borrow</button><button class="chip filter-button" onclick="openTransactionFilters()">⚙ Filters</button><button class="chip" onclick="clearAllTransactionFilters()">Clear filters</button>`;
+    let arr=finalRows();
+    if(kind==='held')arr=arr.filter(t=>t.__special==='held'||t.__special==='held_settlement');
+    else if(kind==='lendborrow')arr=arr.filter(t=>t.__special==='loan'||t.__special==='loan_repayment');
+    else if(kind==='recurring')arr=arr.filter(t=>!t.__special&&!!t.recurring_id);
+    else if(active!=='All')arr=arr.filter(t=>t.type===active);
+    if(mbFilter.from)arr=arr.filter(t=>String(t.transaction_date||t.created_at).slice(0,10)>=mbFilter.from);
+    if(mbFilter.to)arr=arr.filter(t=>String(t.transaction_date||t.created_at).slice(0,10)<=mbFilter.to);
+    if(mbFilter.category)arr=arr.filter(t=>categoryKeyMatch(t,mbFilter.category));
+    if(mbFilter.subcategory)arr=arr.filter(t=>txAllocations(t).some(x=>String(x.category_id)===String(mbFilter.subcategory)));
+    if(mbFilter.account)arr=arr.filter(t=>t.account_id===mbFilter.account||t.to_account_id===mbFilter.account||(state.transaction_accounts||[]).some(x=>x.transaction_id===t.id&&x.account_id===mbFilter.account));
+    if(mbFilter.person)arr=arr.filter(t=>t.person_id===mbFilter.person||(!t.__special&&state.split_participants.some(x=>x.person_id===mbFilter.person&&state.split_transactions.some(st=>st.id===x.split_transaction_id&&st.transaction_id===t.id))));
+    if(mbFilter.description)arr=arr.filter(t=>String(t.description||t.notes||'').toLowerCase().includes(String(mbFilter.description).toLowerCase()));
+    $('txList').innerHTML=arr.map(txHTML).join('')||'<div class="empty">No transactions found.</div>';
+    const count=$('txCount');if(count)count.textContent=`Showing ${arr.length} transaction${arr.length===1?'':'s'}`;
+  };
+
+  const style=document.createElement('style');style.textContent=`.mb-tx-icon{font-family:Arial,sans-serif!important;font-size:18px!important;font-weight:900!important;line-height:1!important;color:var(--ink)!important}.bubble.income.mb-tx-icon{color:var(--mint)!important}.bubble.expense.mb-tx-icon{color:var(--red)!important}.bubble.transfer.mb-tx-icon{color:var(--blue)!important}.bubble.split.mb-tx-icon{color:var(--purple)!important}@media(max-width:560px){.transaction-row .mb-tx-icon{display:grid!important;visibility:visible!important;opacity:1!important;width:36px!important;height:36px!important;font-size:17px!important;flex:0 0 36px!important}.transaction-row .left{min-width:0!important}.transaction-row .tx-content{min-width:0!important}}`;document.head.appendChild(style);
 })();
